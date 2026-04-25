@@ -1,0 +1,27 @@
+{
+  "name": "asil-runners",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "auto": "tsx src/cli.ts",
+    "run:b": "tsx src/run-b.bin.ts",
+    "run:a": "tsx src/run-a.bin.ts",
+    "run:report": "tsx src/run-report.bin.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.0",
+    "asil-cost-controller": "workspace:*",
+    "asil-improvement-loop": "workspace:*",
+    "asil-thought-multiplier": "workspace:*",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.0"
+  }
+}

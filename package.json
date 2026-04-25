@@ -1,0 +1,25 @@
+{
+  "name": "asil",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Autonomous Software Improvement Loop — scan, fix, self-review, gate, PR.",
+  "type": "module",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r build && pnpm -r test",
+    "test:no-build": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

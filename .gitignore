@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+.DS_Store
+.idea/
+.vscode/
+
+.env
+.env.*
+!.env.example
+
+.usage-data/
+.asil/
+*.log
+coverage/
