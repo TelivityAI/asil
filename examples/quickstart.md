@@ -41,7 +41,7 @@ ASIL's thinkers expect Markdown skill files at `<REPO_ROOT>/.asil/skills/`. The 
 
 ```bash
 mkdir -p .asil/skills
-# Copy or symlink any of Addy Osmani's agent-skills you want to use.
+# Copy or symlink any Markdown skills (e.g. from a public skill library) you want to use.
 # A minimal install is fine — the thinkers fall back to inline defaults
 # if a skill file is missing.
 ```

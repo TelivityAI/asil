@@ -12,19 +12,19 @@ returns a value.
 export function runTestStrategist(
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
   return runThinker(
     'test-strategist',
     {
       label: 'Test Strategist',
-      osmaniSkillFile: 'testing-strategy.md',
+      skillFile: 'testing-strategy.md',
       fallbackInstructions: FALLBACK,
     },
     request,
     llm,
-    osmaniSkillsPath,
+    markdownSkillsPath,
     model,
   );
 }

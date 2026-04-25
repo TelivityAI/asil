@@ -230,7 +230,7 @@ export async function runLoop(
         },
         {
           repoRoot: config.repoRoot,
-          osmaniSkillsPath: config.osmaniSkillsPath,
+          markdownSkillsPath: config.markdownSkillsPath,
           model: config.executionModel,
           workDir,
         },

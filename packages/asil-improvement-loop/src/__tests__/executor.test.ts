@@ -529,7 +529,7 @@ describe('executor', () => {
         },
         {
           repoRoot: workDir,
-          osmaniSkillsPath: '/skills',
+          markdownSkillsPath: '/skills',
           model: 'sonnet',
           workDir,
         },
@@ -570,7 +570,7 @@ describe('executor', () => {
           files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.success).toBe(true);
       // Two LLM calls total — initial + retry.
@@ -605,7 +605,7 @@ describe('executor', () => {
           loadSkill: async () => '',
           logger,
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.success).toBe(false);
       expect(result.failedStep).toBe('diff-apply');
@@ -630,7 +630,7 @@ describe('executor', () => {
           loadSkill: async () => '',
           logger,
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.success).toBe(false);
       expect(result.failedStep).toBe('llm-no-diff');
@@ -658,7 +658,7 @@ describe('executor', () => {
           files: mockFileFetcher(),
           loadSkill: async () => '',
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.success).toBe(false);
       expect(result.failedStep).toBe('tests');
@@ -685,7 +685,7 @@ describe('executor', () => {
           loadSkill: async () => '',
         },
         // No workDir option → shared-tree mode → revert on failure
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet' },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet' },
       );
       expect(result.success).toBe(false);
       expect(diff.reverted.length).toBe(1);
@@ -706,7 +706,7 @@ describe('executor', () => {
             return '';
           },
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/skills', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/skills', model: 'sonnet', workDir },
       );
       expect(requested).toEqual({ path: '/skills', name: 'dead-code-removal' });
     });
@@ -734,7 +734,7 @@ describe('executor', () => {
           loadSkill: async () => '',
           logger,
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(logger.events.length).toBe(1);
       const e = logger.events[0]!;
@@ -768,7 +768,7 @@ describe('executor', () => {
           loadSkill: async () => '',
           logger,
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.failedStep).toBe('typecheck');
       expect(result.testsRun).toBe(false);
@@ -799,7 +799,7 @@ describe('executor', () => {
           loadSkill: async () => '',
           logger,
         },
-        { repoRoot: workDir, osmaniSkillsPath: '/s', model: 'sonnet', workDir },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
       );
       expect(result.success).toBe(true);
       expect(result.failedStep).toBeUndefined();

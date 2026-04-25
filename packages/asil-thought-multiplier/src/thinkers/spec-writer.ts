@@ -12,19 +12,19 @@ with a crisp acceptance criterion.
 export function runSpecWriter(
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
   return runThinker(
     'spec-writer',
     {
       label: 'Spec Writer',
-      osmaniSkillFile: 'spec-driven-development.md',
+      skillFile: 'spec-driven-development.md',
       fallbackInstructions: FALLBACK,
     },
     request,
     llm,
-    osmaniSkillsPath,
+    markdownSkillsPath,
     model,
   );
 }

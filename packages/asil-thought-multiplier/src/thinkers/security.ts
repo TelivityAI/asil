@@ -12,19 +12,19 @@ if it's a note about what to verify.
 export async function runSecurity(
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
   const result = await runThinker(
     'security',
     {
       label: 'Security Review',
-      osmaniSkillFile: 'security-review.md',
+      skillFile: 'security-review.md',
       fallbackInstructions: FALLBACK,
     },
     request,
     llm,
-    osmaniSkillsPath,
+    markdownSkillsPath,
     model,
   );
 

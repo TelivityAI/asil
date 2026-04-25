@@ -82,7 +82,7 @@ scan → cycle-detect → triage domain questions → for each task:
 
 ```bash
 # 1. Install
-git clone <this-repo> asil
+git clone https://github.com/telivity-otaip/asil asil
 cd asil
 pnpm install
 pnpm build
@@ -239,7 +239,7 @@ await runLoop({
     maxTasksPerRun: 5,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    osmaniSkillsPath: '.asil/skills',
+    markdownSkillsPath: '.asil/skills',
     repoRoot: process.env.REPO_ROOT!,
     queuePath: '.asil/usage-data/queue.json',
     skipCategories: [],

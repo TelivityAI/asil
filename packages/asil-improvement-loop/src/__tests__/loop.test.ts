@@ -52,7 +52,7 @@ describe('runLoop — integration', () => {
       maxTasksPerRun: 3,
       maxAttempts: 2,
       taskCooldownMs: 0,
-      osmaniSkillsPath: '/skills',
+      markdownSkillsPath: '/skills',
       repoRoot: '/repo',
       queuePath,
       skipCategories: [],

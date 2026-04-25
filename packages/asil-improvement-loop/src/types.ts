@@ -158,7 +158,7 @@ export interface ImprovementLoopConfig {
   maxTasksPerRun: number;
   maxAttempts: number;
   taskCooldownMs: number;
-  osmaniSkillsPath: string;
+  markdownSkillsPath: string;
   repoRoot: string;
   queuePath: string;
   skipCategories: TaskCategory[];

@@ -12,20 +12,20 @@ Prefer consistency with existing endpoints over novel designs.
 export function runApiDesigner(
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
   return runThinker(
     'api-designer',
     {
       label: 'API Designer',
-      // No dedicated Osmani skill — project-native conventions instead.
-      osmaniSkillFile: undefined,
+      // No dedicated Markdown skill — project-native conventions instead.
+      skillFile: undefined,
       fallbackInstructions: FALLBACK,
     },
     request,
     llm,
-    osmaniSkillsPath,
+    markdownSkillsPath,
     model,
   );
 }

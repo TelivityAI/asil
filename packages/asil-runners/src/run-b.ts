@@ -60,7 +60,7 @@ export async function main(): Promise<void> {
 
   const config = {
     ...DEFAULT_CONFIG,
-    osmaniSkillsPath:
+    markdownSkillsPath:
       process.env.ASIL_SKILLS_PATH ?? resolve(env.REPO_ROOT, '.asil', 'skills'),
   };
 

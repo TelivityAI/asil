@@ -165,7 +165,7 @@ export async function main(): Promise<void> {
     maxTasksPerRun: flags.maxTasks,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    osmaniSkillsPath:
+    markdownSkillsPath:
       process.env.ASIL_SKILLS_PATH ?? resolve(env.REPO_ROOT, '.asil', 'skills'),
     repoRoot: env.REPO_ROOT,
     queuePath:

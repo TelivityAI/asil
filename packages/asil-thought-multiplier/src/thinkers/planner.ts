@@ -12,19 +12,19 @@ should be individually verifiable.
 export function runPlanner(
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
   return runThinker(
     'planner',
     {
       label: 'Planner',
-      osmaniSkillFile: 'planning-and-task-breakdown.md',
+      skillFile: 'planning-and-task-breakdown.md',
       fallbackInstructions: FALLBACK,
     },
     request,
     llm,
-    osmaniSkillsPath,
+    markdownSkillsPath,
     model,
   );
 }

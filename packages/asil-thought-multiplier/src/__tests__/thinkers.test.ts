@@ -24,7 +24,7 @@ function req(input: string): UserRequest {
   return { id: 'r1', input, timestamp: new Date() };
 }
 
-const OSMANI = '/nonexistent';
+const SKILLS_PATH = '/nonexistent';
 
 describe('thinkers', () => {
   describe('spec-writer', () => {
@@ -45,7 +45,7 @@ describe('thinkers', () => {
         outputTokens: 50,
       }));
 
-      const out = await runSpecWriter(req('Build X'), llm, OSMANI, 'sonnet');
+      const out = await runSpecWriter(req('Build X'), llm, SKILLS_PATH, 'sonnet');
 
       expect(out.role).toBe('spec-writer');
       expect(llm.calls[0]?.system).toMatch(/role: spec-writer/);
@@ -75,7 +75,7 @@ describe('thinkers', () => {
         inputTokens: 10,
         outputTokens: 5,
       }));
-      const out = await runSpecWriter(req('x'), llm, OSMANI, 'sonnet');
+      const out = await runSpecWriter(req('x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.recommendations.length).toBe(1);
       expect(out.recommendations[0]?.source).toBe('spec-writer');
       expect(out.concerns.length).toBe(1);
@@ -90,7 +90,7 @@ describe('thinkers', () => {
         inputTokens: 10,
         outputTokens: 5,
       }));
-      const out = await runSpecWriter(req('x'), llm, OSMANI, 'sonnet');
+      const out = await runSpecWriter(req('x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.recommendations).toEqual([]);
       expect(out.concerns.length).toBe(1);
       expect(out.concerns[0]?.severity).toBe('warning');
@@ -114,7 +114,7 @@ describe('thinkers', () => {
         inputTokens: 10,
         outputTokens: 5,
       }));
-      const out = await runSpecWriter(req('x'), llm, OSMANI, 'sonnet');
+      const out = await runSpecWriter(req('x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.recommendations.length).toBe(1);
       expect(out.recommendations[0]?.description).toBe('Fenced');
     });
@@ -134,7 +134,7 @@ describe('thinkers', () => {
         inputTokens: 10,
         outputTokens: 5,
       }));
-      const out = await runSpecWriter(req('x'), llm, OSMANI, 'sonnet');
+      const out = await runSpecWriter(req('x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.recommendations[0]?.category).toBe('implementation');
       expect(out.recommendations[0]?.priority).toBe('should');
     });
@@ -156,7 +156,7 @@ describe('thinkers', () => {
         inputTokens: 1,
         outputTokens: 1,
       }));
-      const out = await runSecurity(req('add auth'), llm, OSMANI, 'sonnet');
+      const out = await runSecurity(req('add auth'), llm, SKILLS_PATH, 'sonnet');
       expect(out.role).toBe('security');
     });
 
@@ -166,7 +166,7 @@ describe('thinkers', () => {
         inputTokens: 1,
         outputTokens: 1,
       }));
-      const out = await runSecurity(req('add auth'), llm, OSMANI, 'sonnet');
+      const out = await runSecurity(req('add auth'), llm, SKILLS_PATH, 'sonnet');
       expect(out.recommendations.length).toBeGreaterThanOrEqual(1);
       expect(out.recommendations[0]?.category).toBe('security');
     });
@@ -179,7 +179,7 @@ describe('thinkers', () => {
         inputTokens: 1,
         outputTokens: 1,
       }));
-      const out = await runTestStrategist(req('test x'), llm, OSMANI, 'sonnet');
+      const out = await runTestStrategist(req('test x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.role).toBe('test-strategist');
     });
   });
@@ -191,7 +191,7 @@ describe('thinkers', () => {
         inputTokens: 1,
         outputTokens: 1,
       }));
-      const out = await runApiDesigner(req('design api'), llm, OSMANI, 'sonnet');
+      const out = await runApiDesigner(req('design api'), llm, SKILLS_PATH, 'sonnet');
       expect(out.role).toBe('api-designer');
     });
   });
@@ -203,7 +203,7 @@ describe('thinkers', () => {
         inputTokens: 1,
         outputTokens: 1,
       }));
-      const out = await runPlanner(req('plan x'), llm, OSMANI, 'sonnet');
+      const out = await runPlanner(req('plan x'), llm, SKILLS_PATH, 'sonnet');
       expect(out.role).toBe('planner');
     });
   });

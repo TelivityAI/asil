@@ -2,7 +2,7 @@
  * asil-improvement-loop — System A public surface.
  *
  * The autonomous improvement grinder: scan the codebase for improvable
- * items, pick the highest-priority task, execute the matching Osmani
+ * items, pick the highest-priority task, execute the matching Markdown
  * skill, run a three-persona self-review, gate through Codex, and open
  * a PR if everything passes. Budget enforced via asil-cost-controller.
  */

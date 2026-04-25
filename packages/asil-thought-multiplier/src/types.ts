@@ -128,7 +128,7 @@ export interface ThoughtMultiplierConfig {
   thinkerModel: ModelTier;
   maxThinkers: number;
   autoEscalate: boolean;
-  osmaniSkillsPath: string;
+  markdownSkillsPath: string;
   /** 0..1 — higher = more weight to security in conflict resolution. */
   securityWeight: number;
   /** Display name for the host project. Appears in the brief header. Defaults to "Project". */

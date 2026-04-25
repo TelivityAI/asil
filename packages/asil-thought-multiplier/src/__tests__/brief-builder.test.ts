@@ -15,7 +15,7 @@ const CONFIG: ThoughtMultiplierConfig = {
   thinkerModel: 'sonnet',
   maxThinkers: 4,
   autoEscalate: true,
-  osmaniSkillsPath: '/nonexistent',
+  markdownSkillsPath: '/nonexistent',
   securityWeight: 0.7,
 };
 

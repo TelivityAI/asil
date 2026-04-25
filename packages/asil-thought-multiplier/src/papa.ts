@@ -21,7 +21,7 @@ import { runPlanner } from './thinkers/planner.js';
 type ThinkerRunner = (
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ) => Promise<ThinkerOutput>;
 
@@ -38,7 +38,7 @@ export const DEFAULT_CONFIG: ThoughtMultiplierConfig = {
   thinkerModel: 'sonnet',
   maxThinkers: 4,
   autoEscalate: true,
-  osmaniSkillsPath: '../agent-skills',
+  markdownSkillsPath: process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
   securityWeight: 0.7,
 };
 
@@ -67,7 +67,7 @@ export async function runPapa(
       THINKER_RUNNERS[role](
         request,
         llm,
-        config.osmaniSkillsPath,
+        config.markdownSkillsPath,
         config.thinkerModel,
       ),
     ),

@@ -68,7 +68,7 @@ describe('runPapa — integration', () => {
 
     const result = await runPapa(req('Build a new expense adapter'), llm, cp, {
       ...DEFAULT_CONFIG,
-      osmaniSkillsPath: '/nonexistent',
+      markdownSkillsPath: '/nonexistent',
     });
 
     expect(result.escalated).toBe(false);
@@ -97,7 +97,7 @@ describe('runPapa — integration', () => {
 
     const result = await runPapa(req('Add a new refund feature'), llm, cp, {
       ...DEFAULT_CONFIG,
-      osmaniSkillsPath: '/nonexistent',
+      markdownSkillsPath: '/nonexistent',
     });
 
     expect(result.escalated).toBe(true);
@@ -124,7 +124,7 @@ describe('runPapa — integration', () => {
 
     const result = await runPapa(req('Build something'), llm, cp, {
       ...DEFAULT_CONFIG,
-      osmaniSkillsPath: '/nonexistent',
+      markdownSkillsPath: '/nonexistent',
     });
 
     expect(result.escalated).toBe(true);
@@ -164,7 +164,7 @@ describe('runPapa — integration', () => {
       req('Add API key auth to the admin endpoint'),
       llm,
       cp,
-      { ...DEFAULT_CONFIG, osmaniSkillsPath: '/nonexistent' },
+      { ...DEFAULT_CONFIG, markdownSkillsPath: '/nonexistent' },
     );
 
     expect(result.synthesis.resolvedConflicts.length).toBeGreaterThanOrEqual(1);
@@ -184,7 +184,7 @@ describe('runPapa — integration', () => {
 
     await runPapa(req('Build a new thing'), llm, cp, {
       ...DEFAULT_CONFIG,
-      osmaniSkillsPath: '/nonexistent',
+      markdownSkillsPath: '/nonexistent',
     });
 
     const usage = tracker.getTaskUsage('t1');
@@ -199,7 +199,7 @@ describe('runPapa — integration', () => {
       req('Fix the test for the pricing module'),
       llm,
       cp,
-      { ...DEFAULT_CONFIG, osmaniSkillsPath: '/nonexistent' },
+      { ...DEFAULT_CONFIG, markdownSkillsPath: '/nonexistent' },
     );
     expect(result.routing.activatedThinkers).toContain('test-strategist');
   });

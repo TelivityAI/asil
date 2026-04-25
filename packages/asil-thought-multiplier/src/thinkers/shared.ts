@@ -1,7 +1,7 @@
 /**
  * Shared helpers for thinker agents.
  *
- * Each thinker loads its Osmani skill markdown (if available), injects
+ * Each thinker loads its Markdown skill content (if available), injects
  * project rules, and asks the LLM to respond in a structured JSON
  * envelope we can parse back into ThinkerOutput.
  */
@@ -69,20 +69,20 @@ const VALID_SEVERITIES: readonly Severity[] = ['blocker', 'warning', 'note'];
 export interface ThinkerPromptParts {
   /** Content-type heading used in the system prompt ("Spec Writer", etc.) */
   label: string;
-  /** Filename of the Osmani skill (relative to osmaniSkillsPath/skills). */
-  osmaniSkillFile?: string;
-  /** Fallback instructions if the Osmani skill file can't be read. */
+  /** Filename of the Markdown skill (relative to markdownSkillsPath/skills). */
+  skillFile?: string;
+  /** Fallback instructions if the Markdown skill file can't be read. */
   fallbackInstructions: string;
 }
 
-export function loadOsmaniSkill(
-  osmaniSkillsPath: string,
+export function loadMarkdownSkill(
+  markdownSkillsPath: string,
   skillFile: string | undefined,
   fallback: string,
 ): string {
   if (!skillFile) return fallback;
   try {
-    return readFileSync(join(osmaniSkillsPath, 'skills', skillFile), 'utf8');
+    return readFileSync(join(markdownSkillsPath, 'skills', skillFile), 'utf8');
   } catch {
     return fallback;
   }
@@ -91,11 +91,11 @@ export function loadOsmaniSkill(
 export function buildSystemPrompt(
   role: ThinkerRole,
   parts: ThinkerPromptParts,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
 ): string {
-  const skill = loadOsmaniSkill(
-    osmaniSkillsPath,
-    parts.osmaniSkillFile,
+  const skill = loadMarkdownSkill(
+    markdownSkillsPath,
+    parts.skillFile,
     parts.fallbackInstructions,
   );
 
@@ -120,10 +120,10 @@ export async function runThinker(
   parts: ThinkerPromptParts,
   request: UserRequest,
   llm: LLMCaller,
-  osmaniSkillsPath: string,
+  markdownSkillsPath: string,
   model: string,
 ): Promise<ThinkerOutput> {
-  const systemPrompt = buildSystemPrompt(role, parts, osmaniSkillsPath);
+  const systemPrompt = buildSystemPrompt(role, parts, markdownSkillsPath);
   const userPrompt = buildUserPrompt(request);
 
   const response = await llm.call(systemPrompt, userPrompt, model);

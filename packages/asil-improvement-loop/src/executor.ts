@@ -54,7 +54,7 @@ export interface ExecutorDeps {
   diff: DiffApplier;
   runner: CommandRunner;
   files: FileFetcher;
-  /** Optional override for reading the Osmani skill markdown. */
+  /** Optional override for reading the Markdown skill content. */
   loadSkill?: (skillsPath: string, skillName: string) => Promise<string>;
   /** Optional logger for failure diagnostics. Defaults to stderr. */
   logger?: ExecutorLogger;
@@ -115,7 +115,7 @@ function indent(text: string, prefix: string): string {
 
 export interface ExecuteOptions {
   repoRoot: string;
-  osmaniSkillsPath: string;
+  markdownSkillsPath: string;
   model: string;
   /**
    * Isolated working directory for diff apply + checks. When provided
@@ -134,7 +134,7 @@ export async function executeTask(
 ): Promise<ExecutionResult> {
   const skillName = CATEGORY_SKILL_MAP[task.category];
   const skill = await (deps.loadSkill ?? defaultSkillLoader)(
-    opts.osmaniSkillsPath,
+    opts.markdownSkillsPath,
     skillName,
   );
   const antiRationalization = extractAntiRationalization(skill);
@@ -388,7 +388,7 @@ function defaultReadFile(absPath: string): string | null {
 }
 
 /** Extracts the anti-rationalization table — a section commonly titled
- *  "Anti-Rationalization Table" in Osmani's skills. Returns the skill
+ *  "Anti-Rationalization Table" in the configured skills. Returns the skill
  *  content unchanged if we can't locate it. */
 export function extractAntiRationalization(skill: string): string {
   if (!skill) return '';
@@ -415,7 +415,7 @@ export function buildExecutionPrompt(
   return [
     '# Autonomous Improvement Task',
     '',
-    '## Osmani Skill',
+    '## Markdown Skill',
     skillContent || '(skill content not available — apply the request carefully)',
     '',
     '## Project Rules',
