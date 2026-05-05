@@ -116,12 +116,32 @@ export async function scanTypeErrors(
   if (exitCode === 0) return [];
 
   const output = `${stdout}\n${stderr}`;
+  // pnpm -r prefixes every line of recursive output with
+  //   `<package-path-or-name> <script-name>: <real-line>`
+  // so a tsc error line becomes
+  //   "apps/api typecheck: src/foo.ts(12,3): error TS2307: …"
+  // Strip that prefix per-line, but ONLY when the trailing portion
+  // actually looks like a tsc error — otherwise leave the line alone.
+  // (Without this step the tsc regex below matched the entire prefixed
+  // path as the "file", producing tasks that no executor could satisfy.
+  // Refs Issue #1.)
+  const tscShape = /^.+?\.tsx?\(\d+,\d+\):\s+error\s+TS\d+:/;
+  const cleanedOutput = output
+    .split('\n')
+    .map((line) => {
+      const m = line.match(/^([^\s:][^\s]*)\s+([A-Za-z][\w:-]*):\s+(.+)$/);
+      if (!m) return line;
+      const tail = m[3];
+      return tail && tscShape.test(tail) ? tail : line;
+    })
+    .join('\n');
+
   // tsc line format: path/to/file.ts(12,3): error TS2322: ...
   const errorRegex = /^(.+?\.tsx?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$/gm;
   const byFile = new Map<string, string[]>();
 
   let match: RegExpExecArray | null;
-  while ((match = errorRegex.exec(output)) !== null) {
+  while ((match = errorRegex.exec(cleanedOutput)) !== null) {
     const [, file, line, , code, message] = match;
     if (!file) continue;
     const key = normalizePath(file);
