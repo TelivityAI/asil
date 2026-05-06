@@ -70,6 +70,7 @@ export interface QueueItem {
 
 /** Which pipeline step aborted an execution. */
 export type FailedStep =
+  | 'safety-guard'
   | 'llm-no-diff'
   | 'diff-apply'
   | 'typecheck'
