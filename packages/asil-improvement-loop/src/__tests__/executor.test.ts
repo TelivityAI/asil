@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -601,7 +601,7 @@ describe('executor', () => {
           llm,
           runner,
           diff,
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
           logger,
         },
@@ -626,7 +626,7 @@ describe('executor', () => {
           llm,
           runner: mockRunner([]),
           diff: mockDiffApplier(),
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
           logger,
         },
@@ -655,7 +655,7 @@ describe('executor', () => {
           llm,
           runner,
           diff,
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
         },
         { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
@@ -681,7 +681,7 @@ describe('executor', () => {
           llm,
           runner,
           diff,
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
         },
         // No workDir option → shared-tree mode → revert on failure
@@ -700,7 +700,7 @@ describe('executor', () => {
           llm,
           runner: mockRunner([]),
           diff: mockDiffApplier(),
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async (path, name) => {
             requested = { path, name };
             return '';
@@ -709,6 +709,104 @@ describe('executor', () => {
         { repoRoot: workDir, markdownSkillsPath: '/skills', model: 'sonnet', workDir },
       );
       expect(requested).toEqual({ path: '/skills', name: 'dead-code-removal' });
+    });
+
+    it('safety-guard A: refuses when on-disk file has content but the prompt cache is empty (Issue #2)', async () => {
+      // workDir already has foo.ts with `const x = 1;\n` (non-empty).
+      // mockFileFetcher with no entries returns '' for every path —
+      // simulating the silent fetch-failure that produced 6/10
+      // destructive-replacement diffs in the 2026-05-05 sandbox run.
+      const llm = mockLLM([
+        {
+          match: /.*/,
+          response: { content: fileBlock('foo.ts', 'export {};\n') },
+        },
+      ]);
+      const result = await executeTask(
+        mkTask({ id: 't-guard-a', category: 'type-error', filePaths: ['foo.ts'] }),
+        {
+          llm,
+          runner: mockRunner([]),
+          diff: mockDiffApplier(),
+          files: mockFileFetcher(), // empty — read() returns ''
+          loadSkill: async () => '',
+        },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
+      );
+      expect(result.success).toBe(false);
+      expect(result.failedStep).toBe('safety-guard');
+      expect(result.applyError).toContain('Issue #2 guard A');
+      expect(result.applyError).toContain('foo.ts');
+      // The LLM must NEVER have been called — guard A fires pre-flight.
+      expect(llm.calls.length).toBe(0);
+      // Token usage must be zero — no API spend wasted on a doomed prompt.
+      expect(result.tokenUsage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    });
+
+    it('safety-guard B: rejects a non-dead-code diff that net-deletes >50% of the file (Issue #2)', async () => {
+      // Set up a 200-line on-disk file AND populate the file fetcher
+      // with the same content (so guard A is satisfied — the LLM saw
+      // the real file). Then have the LLM respond with a 1-line
+      // `export {};` body — the destructive minimal-replacement
+      // signature observed in the 2026-05-05 sandbox run.
+      const big = Array.from({ length: 200 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n';
+      writeFileSync(resolve(workDir, 'foo.ts'), big);
+      const llm = mockLLM([
+        {
+          match: /.*/,
+          response: { content: fileBlock('foo.ts', 'export {};\n') },
+        },
+      ]);
+      const result = await executeTask(
+        mkTask({ id: 't-guard-b', category: 'type-error', filePaths: ['foo.ts'] }),
+        {
+          llm,
+          runner: mockRunner([]),
+          diff: mockDiffApplier(),
+          files: mockFileFetcher({ 'foo.ts': big }),
+          loadSkill: async () => '',
+        },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
+      );
+      expect(result.success).toBe(false);
+      expect(result.failedStep).toBe('safety-guard');
+      expect(result.applyError).toContain('Issue #2 guard B');
+      expect(result.applyError).toContain('foo.ts');
+      // The LLM was called (guard B is post-LLM, pre-apply).
+      expect(llm.calls.length).toBeGreaterThanOrEqual(1);
+      // The on-disk file MUST be unchanged.
+      expect(readFileSync(resolve(workDir, 'foo.ts'), 'utf8')).toBe(big);
+    });
+
+    it('safety-guard B does NOT trigger for dead-code tasks (Issue #2 opt-out)', async () => {
+      // Same destructive-shape diff, but task.category = 'dead-code'.
+      // Net-deletion is the whole point of dead-code, so the guard
+      // must let it through. The patch will fail downstream for other
+      // reasons (no diff produced from the canned runner), but the
+      // applyError must NOT mention "guard B".
+      const big = Array.from({ length: 200 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n';
+      writeFileSync(resolve(workDir, 'foo.ts'), big);
+      const llm = mockLLM([
+        {
+          match: /.*/,
+          response: { content: fileBlock('foo.ts', 'export {};\n') },
+        },
+      ]);
+      const result = await executeTask(
+        mkTask({ id: 't-dead', category: 'dead-code', filePaths: ['foo.ts'] }),
+        {
+          llm,
+          runner: mockRunner([]),
+          diff: mockDiffApplier(),
+          files: mockFileFetcher({ 'foo.ts': big }),
+          loadSkill: async () => '',
+        },
+        { repoRoot: workDir, markdownSkillsPath: '/s', model: 'sonnet', workDir },
+      );
+      // The guard is the test target — not the eventual outcome. We
+      // assert only that guard B did NOT fire on this category.
+      expect(result.applyError ?? '').not.toContain('Issue #2 guard B');
+      expect(result.failedStep).not.toBe('safety-guard');
     });
   });
 
@@ -730,7 +828,7 @@ describe('executor', () => {
           llm,
           runner: mockRunner([]),
           diff: mockDiffApplier(),
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
           logger,
         },
@@ -764,7 +862,7 @@ describe('executor', () => {
           llm,
           runner,
           diff: mockDiffApplier(),
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
           logger,
         },
@@ -795,7 +893,7 @@ describe('executor', () => {
           llm,
           runner,
           diff: mockDiffApplier(),
-          files: mockFileFetcher(),
+          files: mockFileFetcher({ 'foo.ts': 'const x = 1;\n' }),
           loadSkill: async () => '',
           logger,
         },

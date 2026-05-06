@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type {
@@ -148,6 +148,53 @@ export async function executeTask(
     }
   }
 
+  // Guard A — pre-flight (Issue #2): if the prompt-side cache is empty
+  // for any file path whose on-disk version is non-empty, the LLM would
+  // be asked to "fix" a file it cannot see. Best case it refuses; worst
+  // case (observed 6/10 in the 2026-05-05 sandbox run on HAIP) it
+  // produces a destructive minimal-replacement diff. Refuse before the
+  // LLM call so the path that produces the bad diff never opens.
+  const guardWorkDir = opts.workDir ?? opts.repoRoot;
+  for (const path of task.filePaths) {
+    const cached = fileContents[path] ?? '';
+    if (cached.trim().length > 0) continue;
+    let onDiskBytes = -1;
+    try {
+      onDiskBytes = statSync(resolve(guardWorkDir, path)).size;
+    } catch {
+      // Path may not resolve on disk (e.g. malformed by Issue #1, or a
+      // brand-new file the executor doesn't support). Fall through —
+      // downstream patch builder produces a clearer error in those cases.
+      continue;
+    }
+    if (onDiskBytes > 0) {
+      const message = `executor refused: scanner provided empty content for "${path}" but on-disk file has ${onDiskBytes} bytes — the LLM would be inventing replacement content (Issue #2 guard A)`;
+      const failedStep: FailedStep = 'safety-guard';
+      const logger = deps.logger ?? DEFAULT_LOGGER;
+      logger.error({
+        taskId: task.id,
+        category: task.category,
+        failedStep,
+        message,
+        workDir: guardWorkDir,
+        diff: '',
+      });
+      return {
+        taskId: task.id,
+        success: false,
+        diff: '',
+        filesChanged: task.filePaths,
+        testsRun: false,
+        testsPassed: false,
+        typeCheckPassed: false,
+        executionLog: '',
+        tokenUsage: { inputTokens: 0, outputTokens: 0 },
+        applyError: message,
+        failedStep,
+      };
+    }
+  }
+
   const systemPrompt = buildExecutionPrompt(skill, antiRationalization);
   const baseUserPrompt = buildTaskPrompt(task, fileContents);
   // Splice in any Dušan-supplied domain context for the files this
@@ -203,6 +250,48 @@ export async function executeTask(
       };
     }
 
+    // Guard B — destructive-diff rejection (Issue #2). If the LLM's
+    // proposed file content net-deletes more than 50% of the original
+    // (chars or lines), refuse to even build the patch. Compares
+    // against fileContents (populated above) — that's exactly what
+    // the LLM was shown, and it avoids a re-read race window between
+    // guard check and apply. dead-code tasks are exempt: net-deletion
+    // is the whole point of that category.
+    //
+    // Size floor: the guard only applies when the original file has
+    // BOTH ≥ MIN_GUARD_B_BYTES of content AND ≥ MIN_GUARD_B_LINES.
+    // Tiny files (a 14-byte one-liner) can legitimately be rewritten
+    // to a comparable size and a 50% threshold there fires on noise.
+    // The destructive pattern observed in the sandbox run was a
+    // ~10-byte `export {};` replacing 466 lines — comfortably above
+    // both floors.
+    const MIN_GUARD_B_BYTES = 200;
+    const MIN_GUARD_B_LINES = 10;
+    if (task.category !== 'dead-code') {
+      for (const block of blocks) {
+        const original = fileContents[block.path] ?? '';
+        if (!original) continue;
+        const oldChars = original.length;
+        const oldLines = original.split('\n').length;
+        if (oldChars < MIN_GUARD_B_BYTES && oldLines < MIN_GUARD_B_LINES) continue;
+        const newChars = block.content.length;
+        const newLines = block.content.split('\n').length;
+        const charLoss = oldChars > 0 ? (oldChars - newChars) / oldChars : 0;
+        const lineLoss = oldLines > 0 ? (oldLines - newLines) / oldLines : 0;
+        if (charLoss > 0.5 || lineLoss > 0.5) {
+          const pct = Math.round(Math.max(charLoss, lineLoss) * 100);
+          return {
+            response,
+            diff: '',
+            applyResult: {
+              applied: false,
+              error: `destructive diff rejected: proposed content for "${block.path}" net-deletes ${pct}% of an existing file (category=${task.category}, not dead-code) (Issue #2 guard B)`,
+            },
+          };
+        }
+      }
+    }
+
     const { patch, error: patchError } = await buildPatchFromFiles(
       blocks,
       workDir,
@@ -251,11 +340,17 @@ export async function executeTask(
   }
 
   if (!attempt.applyResult.applied) {
-    // Terminal — both passes failed. Classify as llm-no-diff (model
-    // couldn't produce usable output) vs diff-apply (patch generated
-    // but failed validation) based on whether we have a diff at all.
-    const failedStep: FailedStep = attempt.diff ? 'diff-apply' : 'llm-no-diff';
+    // Terminal — both passes failed. Classify as safety-guard (a guard
+    // B rejection from this file) vs llm-no-diff (model couldn't
+    // produce usable output) vs diff-apply (patch generated but failed
+    // validation), based on the error sentinel and whether we have a
+    // diff at all.
     const message = attempt.applyResult.error ?? 'git apply failed';
+    const failedStep: FailedStep = message.includes('Issue #2 guard')
+      ? 'safety-guard'
+      : attempt.diff
+        ? 'diff-apply'
+        : 'llm-no-diff';
     logger.error({
       taskId: task.id,
       category: task.category,

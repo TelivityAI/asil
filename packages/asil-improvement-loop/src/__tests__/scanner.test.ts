@@ -77,6 +77,35 @@ describe('scanner', () => {
       });
       expect(tasks).toEqual([]);
     });
+
+    it('strips pnpm -r project-label prefix from typecheck output (Issue #1)', async () => {
+      // pnpm-recursive output prefixes every line with `<pkg> <script>: `.
+      // Without the strip, the file path used to capture as e.g.
+      // "apps/api typecheck: src/database/database.module.ts" — a path
+      // no executor could satisfy. Refs github.com/telivity-otaip/asil#1.
+      const tscOut = [
+        'apps/api typecheck: src/database/database.module.ts(5,1): error TS2307: Cannot find module \'@x/db\'.',
+        'apps/api typecheck: src/foo.ts(10,2): error TS2322: Type string is not assignable to number.',
+        // Mixed: one line that already lacks the prefix should still parse.
+        'packages/shared/src/util.ts(4,4): error TS2304: Cannot find name qux.',
+        // Junk pnpm header lines are not TS errors and must not be misinterpreted.
+        'apps/api typecheck: > tsc --noEmit',
+      ].join('\n');
+      const runner = mockRunner([
+        { match: () => true, stdout: tscOut, exitCode: 2 },
+      ]);
+      const tasks = await scanTypeErrors('/repo', {
+        runner,
+        fs: mockFileReader(),
+      });
+      const paths = tasks.flatMap((t) => t.filePaths);
+      expect(paths).toContain('src/database/database.module.ts');
+      expect(paths).toContain('src/foo.ts');
+      expect(paths).toContain('packages/shared/src/util.ts');
+      // None of the captured paths should still carry the pnpm label.
+      expect(paths.every((p) => !p.includes('typecheck:'))).toBe(true);
+      expect(paths.every((p) => !p.includes(' '))).toBe(true);
+    });
   });
 
   describe('scanTodos', () => {
