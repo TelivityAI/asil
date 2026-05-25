@@ -54,7 +54,14 @@ export {
   branchNameFor,
   type GitOperations,
 } from './pr-builder.js';
-export { runLoop, type LoopDeps, type LoopResult } from './loop.js';
+export { runLoop, isBlockedByDomainGuard, type LoopDeps, type LoopResult } from './loop.js';
+export { runCanaryGate } from './canary-gate.js';
+export {
+  DEFAULT_CANARIES,
+  destructiveDiffCanary,
+  emptyContentCanary,
+  domainQuestionCanary,
+} from './canaries/index.js';
 export {
   DomainAnswerStore,
   buildDomainAnswerContext,
