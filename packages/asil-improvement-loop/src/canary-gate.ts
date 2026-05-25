@@ -1,15 +1,25 @@
 import { DEFAULT_CANARIES } from './canaries/index.js';
-import type { CanaryGateConfig, CanaryGateResult } from './types.js';
+import type { CanaryGateConfig, CanaryGateResult, CanaryResult } from './types.js';
 
 export async function runCanaryGate(
   config?: CanaryGateConfig,
 ): Promise<CanaryGateResult> {
   const start = Date.now();
   const canaries = config?.canaries ?? DEFAULT_CANARIES;
-  const results = [];
+  const results: CanaryResult[] = [];
 
   for (const canary of canaries) {
-    const result = await canary.run();
+    let result: CanaryResult;
+    try {
+      result = await canary.run();
+    } catch (err) {
+      result = {
+        name: canary.name,
+        passed: false,
+        reason: `Canary threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        durationMs: Date.now() - start,
+      };
+    }
     results.push(result);
     if (!result.passed) {
       return {

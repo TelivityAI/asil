@@ -249,6 +249,15 @@ export async function main(): Promise<void> {
 
   const result = await runLoop(config, deps);
 
+  if (result.canaryGateAborted) {
+    console.error('\n🚨 Canary gate FAILED — loop aborted before processing tasks.');
+    console.error(`   Failed canary: ${result.canaryGateResult?.failedCanary}`);
+    console.error(`   Reason: ${result.canaryGateResult?.failureReason}`);
+    console.error('   A safety guard may have regressed. Investigate before re-running.');
+    process.exitCode = 1;
+    return;
+  }
+
   console.log('\n📊 Results:');
   console.log(`   Tasks processed: ${result.tasksProcessed}`);
   console.log(`   PRs opened: ${result.prsOpened}`);
