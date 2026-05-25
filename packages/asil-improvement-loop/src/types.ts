@@ -167,6 +167,7 @@ export interface ImprovementLoopConfig {
     apiKey: string;
     model: string;
   };
+  canaryGate?: CanaryGateConfig;
 }
 
 /** Shared LLM caller contract — same shape as System B uses. */
@@ -187,4 +188,34 @@ export interface LLMResponse {
 /** Separate call interface for Codex — different provider, distinct mock surface. */
 export interface CodexCaller {
   call(prompt: string, model: string): Promise<{ content: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Canary Gate types
+// ---------------------------------------------------------------------------
+
+export interface CanaryGateConfig {
+  enabled: boolean;
+  canaries?: Canary[];
+}
+
+export interface Canary {
+  name: string;
+  description: string;
+  run(): Promise<CanaryResult>;
+}
+
+export interface CanaryResult {
+  name: string;
+  passed: boolean;
+  reason: string;
+  durationMs: number;
+}
+
+export interface CanaryGateResult {
+  passed: boolean;
+  results: CanaryResult[];
+  failedCanary?: string;
+  failureReason?: string;
+  totalDurationMs: number;
 }
