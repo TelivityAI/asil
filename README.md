@@ -203,6 +203,7 @@ Every LLM call in B and A flows through a `CostCheckpoint`. Each checkpoint is b
 | `projectName` | `ThoughtMultiplierConfig` | `"Project"` | Header in generated brief |
 | `projectDoNotChange` | `ThoughtMultiplierConfig` | `[]` | Project-specific "do not modify" entries |
 | `dailyBudgetUSD` | `BudgetManagerConfig` | `20.00` | Cost-controller daily cap |
+| `canaryGate` | `ImprovementLoopConfig` | `{ enabled: true }` | Pre-flight safety gate verification — set `enabled: false` to skip |
 
 ## Integration
 
@@ -257,6 +258,29 @@ await runLoop({
 - **Adversarial gate.** A different LLM (different provider) reads the diff cold and tries to break it. Catches things the writer's family doesn't see.
 - **Cost controller is first-class.** Budget allocation, per-call checkpoints, kill switch, daily caps, persisted state. Not a logging afterthought.
 - **Worktree isolation with FUSE fallback.** Every task runs in a disposable `git worktree` clone. The main checkout is never touched. On filesystems where `worktree add` fails (Google Drive, some FUSE mounts), the runner falls back to `git clone` automatically.
+- **Canary gates.** Pre-flight verification that safety guards haven't regressed. Three deterministic canaries run at the start of every `runLoop()` invocation — if any gate is silently broken, the loop aborts before processing real tasks. Zero LLM calls, zero token spend, deterministic.
+
+## Canary Gates
+
+Before processing any real tasks, the improvement loop runs three deterministic canary checks that verify the safety gates are still functional. If any canary fails, the loop aborts immediately — no tasks are processed, no PRs are opened.
+
+**Why this matters:** Safety gates (Guard A, Guard B, domain guard) are the only thing standing between a hallucinating LLM and a destructive PR. A refactor that accidentally removes a guard check would silently allow dangerous diffs through. Canaries catch this at runtime, not just in the test suite.
+
+**The three canaries:**
+
+| Canary | Tests | How |
+|--------|-------|-----|
+| `destructive-diff` | Guard B (net-deletion >50%) | Feeds a synthetic file-block response that deletes 95% of a 25-line file. Expects Guard B to reject it. |
+| `empty-content` | Guard A (empty prompt content) | Creates a real temp file, but provides empty content to the executor. Expects Guard A to refuse. |
+| `domain-question` | Domain guard (blocked files) | Verifies the `isBlockedByDomainGuard` predicate correctly blocks tasks touching files with unresolved `DOMAIN_QUESTION` markers. |
+
+**Characteristics:**
+- Deterministic — no LLM calls, no network, no stochasticity
+- Fast — runs in <50ms total
+- Self-contained — each canary constructs its own mock infrastructure
+- Default enabled — runs automatically unless explicitly disabled
+
+**Disabling:** Set `canaryGate: { enabled: false }` in your `ImprovementLoopConfig`. You can also supply custom canaries via `canaryGate: { enabled: true, canaries: [...] }`.
 
 ## Requirements
 

@@ -14,7 +14,9 @@ import {
   buildDomainAnswerContext,
   type DomainAnswerStore,
 } from './domain-questions.js';
+import { runCanaryGate } from './canary-gate.js';
 import type {
+  CanaryGateResult,
   CodexCaller,
   ImprovementLoopConfig,
   LLMCaller,
@@ -62,12 +64,38 @@ export interface LoopResult {
   rejected: number;
   budgetExhausted: boolean;
   cyclesDetected: number;
+  canaryGateAborted?: boolean;
+  canaryGateResult?: CanaryGateResult;
+}
+
+export function isBlockedByDomainGuard(
+  filePaths: readonly string[],
+  blockedFiles: ReadonlySet<string>,
+): boolean {
+  return filePaths.some((p) => blockedFiles.has(p));
 }
 
 export async function runLoop(
   config: ImprovementLoopConfig,
   deps: LoopDeps,
 ): Promise<LoopResult> {
+  // 0. Pre-flight canary gate — verify safety guards haven't regressed.
+  if (config.canaryGate?.enabled !== false) {
+    const canaryResult = await runCanaryGate(config.canaryGate);
+    if (!canaryResult.passed) {
+      return {
+        tasksProcessed: 0,
+        outcomes: [],
+        prsOpened: 0,
+        rejected: 0,
+        budgetExhausted: false,
+        cyclesDetected: 0,
+        canaryGateAborted: true,
+        canaryGateResult: canaryResult,
+      };
+    }
+  }
+
   const queue = deps.queue ?? new TaskQueue(config.queuePath);
   const cycleDetector = deps.cycleDetector ?? new CycleDetector();
   const outcomes: TaskOutcome[] = [];
@@ -83,10 +111,7 @@ export async function runLoop(
   const blocked = deps.blockedFiles ?? new Set<string>();
   for (const task of scan.tasks) {
     if (config.skipCategories.includes(task.category)) continue;
-    // Drop tasks that touch files with unresolved/skipped domain
-    // questions — making code decisions in files Dušan hasn't decided
-    // about would just add noise.
-    if (task.filePaths.some((p) => blocked.has(p))) continue;
+    if (isBlockedByDomainGuard(task.filePaths, blocked)) continue;
     queue.enqueue(task);
   }
 
