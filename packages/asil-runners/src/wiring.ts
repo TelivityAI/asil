@@ -57,8 +57,16 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   const OPENAI_API_KEY = env.OPENAI_API_KEY ?? '';
   const REPO_ROOT = env.REPO_ROOT ?? process.cwd();
 
-  if (!ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY environment variable is required');
+  // ANTHROPIC_API_KEY is the historical default for the primary LLM.
+  // When the caller has configured a local-model adapter via
+  // ASIL_LLM_BASE_URL, the Anthropic key is not needed — skip the
+  // requirement so users on air-gapped / regulated deployments aren't
+  // forced to set a dummy value.
+  const localModeEnabled = (env.ASIL_LLM_BASE_URL ?? '').length > 0;
+  if (!ANTHROPIC_API_KEY && !localModeEnabled) {
+    throw new Error(
+      'ANTHROPIC_API_KEY environment variable is required (or set ASIL_LLM_BASE_URL for local-mode)',
+    );
   }
 
   return { ANTHROPIC_API_KEY, OPENAI_API_KEY, REPO_ROOT };
@@ -152,6 +160,134 @@ export function createCodexCaller(
         choices?: Array<{ message?: { content?: string } }>;
       };
 
+      return { content: data.choices?.[0]?.message?.content ?? '' };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI-compatible local-model adapter
+//
+// Targets any HTTP server that implements the `/v1/chat/completions`
+// OpenAI-compatible API: Ollama (via /v1 endpoint), LM Studio, vLLM,
+// llama.cpp server, OpenRouter, Azure OpenAI, etc. One adapter, many
+// backends. The cost-controller's checkpoint expects non-zero tokens
+// to gate spend — local servers often omit `usage`, so this adapter
+// falls back to a chars/4 estimate (overridable).
+// ---------------------------------------------------------------------------
+
+export interface OpenAICompatibleOptions {
+  /** Base URL, e.g. 'http://localhost:11434/v1' (Ollama),
+   *  'http://localhost:1234/v1' (LM Studio), or an OpenRouter URL. */
+  baseUrl: string;
+  /** Optional bearer token; many local servers don't require auth. */
+  apiKey?: string;
+  /** Path appended to baseUrl. Default `/chat/completions`. */
+  endpoint?: string;
+  /** Max output tokens per call. Default 4096. */
+  maxTokens?: number;
+  /** Injectable fetch for tests. Defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+  /** Estimator used when the server omits `usage`. Default chars/4. */
+  estimateTokens?: (text: string) => number;
+}
+
+interface OpenAICompatibleResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+function defaultEstimator(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Build the LLMCaller / CodexCaller variants over an OpenAI-compatible
+ * endpoint. The bodies are nearly identical to `createCodexCaller`'s —
+ * the differences: configurable baseUrl, optional Authorization
+ * header, token estimation when `usage` is absent. The two factories
+ * share a single internal POST helper.
+ */
+function postOpenAICompatible(
+  opts: OpenAICompatibleOptions,
+  body: {
+    model: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  },
+): Promise<OpenAICompatibleResponse> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const endpoint = opts.endpoint ?? '/chat/completions';
+  const url = opts.baseUrl.replace(/\/+$/, '') + endpoint;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
+
+  return fetchImpl(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...body,
+      max_tokens: opts.maxTokens ?? 4096,
+    }),
+  }).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(
+        `OpenAI-compatible API error (${url}): ${response.status} ${await response.text()}`,
+      );
+    }
+    return (await response.json()) as OpenAICompatibleResponse;
+  });
+}
+
+/**
+ * LLMCaller backed by an OpenAI-compatible endpoint. The `model`
+ * argument is passed through unchanged — local model ids (e.g.
+ * `llama3.1:8b-instruct-q4_K_M`) don't fit the opus/sonnet/haiku
+ * tier system, so MODEL_ID_BY_TIER is intentionally NOT consulted.
+ * Callers should pass the local model id verbatim (typically wired
+ * through config or the ASIL_LLM_MODEL env var).
+ */
+export function createOpenAICompatibleCaller(
+  opts: OpenAICompatibleOptions,
+): LLMCaller {
+  const estimate = opts.estimateTokens ?? defaultEstimator;
+  return {
+    async call(systemPrompt, userPrompt, model) {
+      const data = await postOpenAICompatible(opts, {
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      const content = data.choices?.[0]?.message?.content ?? '';
+      const usage = data.usage ?? {};
+      const inputTokens =
+        typeof usage.prompt_tokens === 'number'
+          ? usage.prompt_tokens
+          : estimate(systemPrompt + '\n' + userPrompt);
+      const outputTokens =
+        typeof usage.completion_tokens === 'number'
+          ? usage.completion_tokens
+          : estimate(content);
+      return { content, inputTokens, outputTokens };
+    },
+  };
+}
+
+/**
+ * CodexCaller variant (no token surface). Useful when the adversarial
+ * gate should also run against a local model rather than OpenAI cloud.
+ * Wraps `createOpenAICompatibleCaller` and drops the token fields.
+ */
+export function createOpenAICompatibleCodexCaller(
+  opts: OpenAICompatibleOptions,
+): CodexCaller {
+  return {
+    async call(prompt, model) {
+      const data = await postOpenAICompatible(opts, {
+        model,
+        messages: [{ role: 'user', content: prompt }],
+      });
       return { content: data.choices?.[0]?.message?.content ?? '' };
     },
   };

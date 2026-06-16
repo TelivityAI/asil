@@ -82,6 +82,14 @@ scan → cycle-detect → triage domain questions → for each task:
 
 Optional layer. Pass `--transcripts <dir>` to `pnpm --filter asil-runners run:a` and the runner captures every LLM/Codex call as structured JSON, then runs five deterministic detectors (sycophancy, first-item bias, belief-action gap, drift, multi-hop decay) and writes a `findings.md` next to the transcripts. No LLM calls in the analysis — purely lexical / regex / statistical. Zero extra API cost. See [`packages/asil-analyzer/README.md`](packages/asil-analyzer/README.md) for the detector definitions and the deterministic-only trade-off.
 
+### Local models — OpenAI-compatible adapter
+
+ASIL can run against any HTTP server speaking the OpenAI-compatible `/v1/chat/completions` API: **Ollama, LM Studio, vLLM, llama.cpp server, OpenRouter, Azure OpenAI**. Set `ASIL_LLM_BASE_URL` and `ASIL_LLM_MODEL` and the runner uses the local adapter instead of cloud Anthropic. `ANTHROPIC_API_KEY` is no longer required in local mode. Cost-controller token caps still bite (chars/4 fallback when the server omits `usage`); the dollar number reports as $0 since local inference has no wire cost. Full walkthrough — including the mixed cloud-execution + local-adversarial-gate recipe — in [`examples/local-llm.md`](examples/local-llm.md).
+
+### Languages — Python profile
+
+The scanner is profile-driven (`LanguageProfile` interface). TypeScript is the reference; Python ships out of the box. Select via `--profile <ts|python>`. Python requires `pytest` with the `pytest-json-report` plugin, `mypy`, and `coverage.py`. Adding Go or Rust is a "write a profile" task, not a fork.
+
 ## Quick start
 
 ```bash

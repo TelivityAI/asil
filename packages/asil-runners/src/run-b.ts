@@ -12,6 +12,7 @@ import type { UserRequest } from 'asil-thought-multiplier';
 import {
   createAnthropicCaller,
   createCostInfra,
+  createOpenAICompatibleCaller,
   loadEnv,
 } from './wiring.js';
 
@@ -27,7 +28,15 @@ export async function main(): Promise<void> {
 
   const input = args.join(' ');
   const env = loadEnv();
-  const llm = createAnthropicCaller(env.ANTHROPIC_API_KEY);
+  // Same env switch as run-a: ASIL_LLM_BASE_URL → local-mode adapter,
+  // otherwise the cloud Anthropic adapter.
+  const llmBaseUrl = process.env.ASIL_LLM_BASE_URL ?? '';
+  const llm = llmBaseUrl
+    ? createOpenAICompatibleCaller({
+        baseUrl: llmBaseUrl,
+        apiKey: process.env.ASIL_LLM_API_KEY,
+      })
+    : createAnthropicCaller(env.ANTHROPIC_API_KEY);
   const costInfra = createCostInfra(env.REPO_ROOT);
 
   const requestId = randomUUID().slice(0, 8);

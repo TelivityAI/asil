@@ -49,6 +49,13 @@ export function calculateCallCost(
   pricing: Record<ModelTier, ModelPricing> = DEFAULT_PRICING,
 ): Decimal {
   const p = pricing[usage.model];
+  // Local-model mode plumbs arbitrary model ids (e.g. `llama3.1`)
+  // through this function via the cost-controller's accounting path.
+  // Those ids aren't in the pricing table — they have no wire cost at
+  // all (local inference). Returning Decimal(0) here keeps reports
+  // honest (zero $) without forcing every caller to special-case
+  // local mode upstream.
+  if (!p) return new Decimal(0);
   let cost = new Decimal(usage.inputTokens)
     .div(ONE_MILLION)
     .times(p.inputPerMillion)

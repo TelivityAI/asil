@@ -18,6 +18,8 @@ import {
   createFileFetcher,
   createFileReader,
   createGitOps,
+  createOpenAICompatibleCaller,
+  createOpenAICompatibleCodexCaller,
   loadEnv,
 } from '../wiring.js';
 
@@ -48,6 +50,17 @@ describe('wiring', () => {
         OPENAI_API_KEY: 'sk-oai-y',
         REPO_ROOT: '/tmp/repo',
       });
+    });
+
+    it('skips the ANTHROPIC_API_KEY requirement when ASIL_LLM_BASE_URL is set (local-mode)', () => {
+      const env = loadEnv({
+        ASIL_LLM_BASE_URL: 'http://localhost:11434/v1',
+        REPO_ROOT: '/tmp/repo',
+      });
+      // The Anthropic key field stays empty — caller wires the local
+      // adapter instead. No throw.
+      expect(env.ANTHROPIC_API_KEY).toBe('');
+      expect(env.REPO_ROOT).toBe('/tmp/repo');
     });
   });
 
@@ -191,6 +204,181 @@ describe('wiring', () => {
       const caller = createCodexCaller('k', { fetchImpl: fakeFetch });
       const res = await caller.call('p', 'gpt-4o');
       expect(res.content).toBe('');
+    });
+  });
+
+  describe('createOpenAICompatibleCaller', () => {
+    it('POSTs system+user messages to <baseUrl>/chat/completions; parses content + usage', async () => {
+      let capturedUrl = '';
+      let capturedInit: RequestInit | undefined;
+      const fakeFetch: typeof fetch = (async (url: string, init?: RequestInit) => {
+        capturedUrl = url;
+        capturedInit = init;
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [{ message: { content: 'llm reply' } }],
+              usage: { prompt_tokens: 17, completion_tokens: 9 },
+            };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://localhost:11434/v1',
+        apiKey: 'optional-token',
+        fetchImpl: fakeFetch,
+      });
+      const res = await caller.call('sys', 'user', 'llama3.1');
+
+      expect(res.content).toBe('llm reply');
+      expect(res.inputTokens).toBe(17);
+      expect(res.outputTokens).toBe(9);
+      expect(capturedUrl).toBe('http://localhost:11434/v1/chat/completions');
+
+      const headers = capturedInit?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer optional-token');
+      expect(headers['Content-Type']).toBe('application/json');
+
+      const body = JSON.parse(String(capturedInit?.body ?? '{}'));
+      expect(body.model).toBe('llama3.1');
+      expect(body.messages).toEqual([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'user' },
+      ]);
+    });
+
+    it('omits Authorization header when apiKey is unset (many local servers ignore auth)', async () => {
+      let capturedInit: RequestInit | undefined;
+      const fakeFetch: typeof fetch = (async (_url: string, init?: RequestInit) => {
+        capturedInit = init;
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'r' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://localhost:11434/v1',
+        fetchImpl: fakeFetch,
+      });
+      await caller.call('s', 'u', 'm');
+      const headers = capturedInit?.headers as Record<string, string>;
+      expect(headers.Authorization).toBeUndefined();
+    });
+
+    it('estimates tokens via chars/4 when the server omits usage', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: true,
+          async json() {
+            // No `usage` field — common with Ollama on /v1 and llama.cpp.
+            return { choices: [{ message: { content: 'abcdefghij' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://localhost:11434/v1',
+        fetchImpl: fakeFetch,
+      });
+      const res = await caller.call('sysprompt', 'userp', 'm');
+      // system+user chars = 9 + 1 + 5 = 15; ceil(15/4) = 4
+      expect(res.inputTokens).toBe(4);
+      // content chars = 10; ceil(10/4) = 3
+      expect(res.outputTokens).toBe(3);
+    });
+
+    it('honours a custom estimateTokens', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'xyz' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://x/v1',
+        fetchImpl: fakeFetch,
+        estimateTokens: (t) => t.length, // 1 char = 1 token
+      });
+      const res = await caller.call('ab', 'c', 'm');
+      // estimateTokens('ab\nc') = 4
+      expect(res.inputTokens).toBe(4);
+      expect(res.outputTokens).toBe(3);
+    });
+
+    it('strips trailing slash from baseUrl before appending /chat/completions', async () => {
+      let capturedUrl = '';
+      const fakeFetch: typeof fetch = (async (url: string) => {
+        capturedUrl = url;
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'r' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://localhost:1234/v1/',
+        fetchImpl: fakeFetch,
+      });
+      await caller.call('s', 'u', 'm');
+      expect(capturedUrl).toBe('http://localhost:1234/v1/chat/completions');
+    });
+
+    it('throws a clear error when the server returns non-OK', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: false,
+          status: 500,
+          async text() {
+            return 'broken';
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createOpenAICompatibleCaller({
+        baseUrl: 'http://x/v1',
+        fetchImpl: fakeFetch,
+      });
+      await expect(caller.call('s', 'u', 'm')).rejects.toThrow(/500/);
+    });
+  });
+
+  describe('createOpenAICompatibleCodexCaller', () => {
+    it('uses a single user message and returns just { content }', async () => {
+      let capturedInit: RequestInit | undefined;
+      const fakeFetch: typeof fetch = (async (_url: string, init?: RequestInit) => {
+        capturedInit = init;
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'adversarial reply' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+      const caller = createOpenAICompatibleCodexCaller({
+        baseUrl: 'http://localhost:11434/v1',
+        fetchImpl: fakeFetch,
+      });
+      const res = await caller.call('challenge this diff', 'mistral');
+      expect(res.content).toBe('adversarial reply');
+      const body = JSON.parse(String(capturedInit?.body ?? '{}'));
+      expect(body.messages).toEqual([
+        { role: 'user', content: 'challenge this diff' },
+      ]);
+      // The result shape matches CodexCaller — no token fields.
+      expect('inputTokens' in res).toBe(false);
     });
   });
 
