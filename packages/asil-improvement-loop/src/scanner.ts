@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type { ImprovementTask, TaskCategory, Severity } from './types.js';
+import type { LanguageProfile } from './language-profile.js';
+import { typescriptProfile } from './profiles/typescript.js';
+import type { ImprovementTask, Severity, TaskCategory } from './types.js';
 
 /** Directories that every recursive grep in the scanner must skip.
  *  Without these, grep crawls node_modules (thousands of .ts files)
@@ -11,6 +13,9 @@ const GREP_EXCLUDE_DIRS = [
   '--exclude-dir=.next',
   '--exclude-dir=coverage',
   '--exclude-dir=design',
+  '--exclude-dir=__pycache__',
+  '--exclude-dir=.venv',
+  '--exclude-dir=venv',
 ];
 
 /** Runs a shell command and returns stdout+stderr plus the exit code. */
@@ -40,17 +45,26 @@ export interface ScannerDeps {
   fs: FileReader;
 }
 
+/**
+ * Run every sub-scanner under the given language profile. The profile
+ * defines the commands and parsers; this function provides the
+ * orchestration (parallel fan-out, task assembly).
+ *
+ * `profile` defaults to TypeScript for backwards compatibility with
+ * callers built before the multi-language refactor.
+ */
 export async function scanCodebase(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ScanResult> {
   const start = Date.now();
   const results = await Promise.all([
-    scanTestFailures(repoRoot, deps),
-    scanTypeErrors(repoRoot, deps),
-    scanTodos(repoRoot, deps),
-    scanCoverageGaps(repoRoot, deps),
-    scanDeadCode(repoRoot, deps),
+    scanTestFailures(repoRoot, deps, profile),
+    scanTypeErrors(repoRoot, deps, profile),
+    scanTodos(repoRoot, deps, profile),
+    scanCoverageGaps(repoRoot, deps, profile),
+    scanDeadCode(repoRoot, deps, profile),
   ]);
   return {
     tasks: results.flat(),
@@ -62,122 +76,86 @@ export async function scanCodebase(
 export async function scanTestFailures(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ImprovementTask[]> {
-  const { stdout, exitCode } = await deps.runner.run(
-    'pnpm',
-    ['test', '--reporter=json'],
+  const { stdout, stderr, exitCode } = await deps.runner.run(
+    profile.testCommand.cmd,
+    profile.testCommand.args,
     { cwd: repoRoot },
   );
   if (exitCode === 0) return [];
 
-  const tasks: ImprovementTask[] = [];
-  const parsed = tryParseVitestJson(stdout);
-  if (!parsed) return tasks;
-
-  const files = Array.isArray(parsed.testResults) ? parsed.testResults : [];
-  for (const file of files) {
-    if (!file || typeof file !== 'object') continue;
-    const f = file as Record<string, unknown>;
-    const failures = Array.isArray(f.assertionResults)
-      ? (f.assertionResults as Array<Record<string, unknown>>).filter(
-          (a) => a.status === 'failed',
-        )
-      : [];
-    if (failures.length === 0) continue;
-
-    const filePath = normalizePath(
-      typeof f.name === 'string' ? f.name : 'unknown',
-    );
-    tasks.push(
-      makeTask({
-        category: 'test-failure',
-        severity: 'critical',
-        title: `Fix ${failures.length} failing test(s) in ${shortPath(filePath)}`,
-        description: failures
-          .map((a) => String(a.fullName ?? a.title ?? 'unnamed'))
-          .join('\n'),
-        filePaths: [filePath],
-        estimatedTokens: 50_000,
-      }),
-    );
-  }
-  return tasks;
+  const failures = profile.parseTestFailures(stdout, stderr);
+  return failures.map((f) =>
+    makeTask({
+      category: 'test-failure',
+      severity: 'critical',
+      title: `Fix ${f.failureNames.length} failing test(s) in ${shortPath(f.filePath)}`,
+      description: f.failureNames.join('\n'),
+      filePaths: [f.filePath],
+      estimatedTokens: 50_000,
+    }),
+  );
 }
 
 export async function scanTypeErrors(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ImprovementTask[]> {
   const { stdout, stderr, exitCode } = await deps.runner.run(
-    'pnpm',
-    ['typecheck'],
+    profile.typecheckCommand.cmd,
+    profile.typecheckCommand.args,
     { cwd: repoRoot },
   );
   if (exitCode === 0) return [];
 
-  const output = `${stdout}\n${stderr}`;
-  // pnpm -r prefixes every line of recursive output with
-  //   `<package-path-or-name> <script-name>: <real-line>`
-  // so a tsc error line becomes
-  //   "apps/api typecheck: src/foo.ts(12,3): error TS2307: …"
-  // Strip that prefix per-line, but ONLY when the trailing portion
-  // actually looks like a tsc error — otherwise leave the line alone.
-  // (Without this step the tsc regex below matched the entire prefixed
-  // path as the "file", producing tasks that no executor could satisfy.
-  // Refs Issue #1.)
-  const tscShape = /^.+?\.tsx?\(\d+,\d+\):\s+error\s+TS\d+:/;
-  const cleanedOutput = output
-    .split('\n')
-    .map((line) => {
-      const m = line.match(/^([^\s:][^\s]*)\s+([A-Za-z][\w:-]*):\s+(.+)$/);
-      if (!m) return line;
-      const tail = m[3];
-      return tail && tscShape.test(tail) ? tail : line;
-    })
-    .join('\n');
+  let output = `${stdout}\n${stderr}`;
+  // Apply per-line tool-runner-prefix stripping if the profile defines
+  // one (e.g. pnpm-recursive's `<pkg> <script>: ` prefix). Lines the
+  // profile doesn't recognize as a tool-prefixed error pass through
+  // unchanged.
+  if (profile.stripOutputPrefix) {
+    output = output
+      .split('\n')
+      .map((line) => profile.stripOutputPrefix!(line) ?? line)
+      .join('\n');
+  }
 
-  // tsc line format: path/to/file.ts(12,3): error TS2322: ...
-  const errorRegex = /^(.+?\.tsx?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$/gm;
+  const errors = profile.parseTypeErrors(output);
   const byFile = new Map<string, string[]>();
-
-  let match: RegExpExecArray | null;
-  while ((match = errorRegex.exec(cleanedOutput)) !== null) {
-    const [, file, line, , code, message] = match;
-    if (!file) continue;
-    const key = normalizePath(file);
-    const arr = byFile.get(key) ?? [];
-    arr.push(`${code} at :${line} — ${message}`);
-    byFile.set(key, arr);
+  for (const e of errors) {
+    const arr = byFile.get(e.filePath) ?? [];
+    arr.push(`${e.code} at :${e.line} — ${e.message}`);
+    byFile.set(e.filePath, arr);
   }
 
-  const tasks: ImprovementTask[] = [];
-  for (const [file, msgs] of byFile) {
-    tasks.push(
-      makeTask({
-        category: 'type-error',
-        severity: 'high',
-        title: `Fix ${msgs.length} TS error(s) in ${shortPath(file)}`,
-        description: msgs.join('\n'),
-        filePaths: [file],
-        estimatedTokens: 40_000,
-      }),
-    );
-  }
-  return tasks;
+  return Array.from(byFile.entries()).map(([file, msgs]) =>
+    makeTask({
+      category: 'type-error',
+      severity: 'high',
+      title: `Fix ${msgs.length} type error(s) in ${shortPath(file)}`,
+      description: msgs.join('\n'),
+      filePaths: [file],
+      estimatedTokens: 40_000,
+    }),
+  );
 }
 
 export async function scanTodos(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ImprovementTask[]> {
-  // Use grep through the runner so it's mockable in tests.
+  const includes = profile.todoFileExtensions.flatMap((ext) => [
+    '--include=*.' + ext,
+  ]);
   const { stdout } = await deps.runner.run(
     'grep',
     [
       '-rn',
       ...GREP_EXCLUDE_DIRS,
-      '--include=*.ts',
-      '--include=*.tsx',
+      ...includes,
       '-E',
       '(TODO|FIXME|HACK|DOMAIN_QUESTION)[: ]',
       '.',
@@ -221,37 +199,29 @@ export async function scanTodos(
 export async function scanCoverageGaps(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ImprovementTask[]> {
-  // Look for an existing coverage-summary.json instead of running the full
-  // test+coverage pipeline inside a scan (that would recurse into our own
-  // changes). If there's no coverage report yet, return nothing — the first
-  // run emits no coverage tasks.
-  const raw = await deps.fs.read(`${repoRoot}/coverage/coverage-summary.json`);
+  const raw = await deps.fs.read(`${repoRoot}/${profile.coverage.reportPath}`);
   if (!raw) return [];
 
-  let parsed: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
+    parsed = JSON.parse(raw);
   } catch {
     return [];
   }
 
+  const entries = profile.coverage.extract(parsed);
   const tasks: ImprovementTask[] = [];
-  for (const [rawKey, metrics] of Object.entries(parsed)) {
-    if (rawKey === 'total' || !metrics || typeof metrics !== 'object') continue;
-    const m = metrics as Record<string, unknown>;
-    const branches = (m.branches as Record<string, unknown> | undefined) ?? {};
-    const pct = typeof branches.pct === 'number' ? branches.pct : 100;
-    if (pct >= 80) continue;
-
-    const file = normalizePath(rawKey);
+  for (const entry of entries) {
+    if (entry.branchPct >= 80) continue;
     tasks.push(
       makeTask({
         category: 'coverage-gap',
-        severity: pct < 50 ? 'high' : 'medium',
-        title: `Raise branch coverage in ${shortPath(file)} (${pct}%)`,
-        description: `Branch coverage is ${pct}% — add tests until >=80%.`,
-        filePaths: [file],
+        severity: entry.branchPct < 50 ? 'high' : 'medium',
+        title: `Raise branch coverage in ${shortPath(entry.filePath)} (${entry.branchPct}%)`,
+        description: `Branch coverage is ${entry.branchPct}% — add tests until >=80%.`,
+        filePaths: [entry.filePath],
         estimatedTokens: 50_000,
       }),
     );
@@ -262,28 +232,24 @@ export async function scanCoverageGaps(
 export async function scanDeadCode(
   repoRoot: string,
   deps: ScannerDeps,
+  profile: LanguageProfile = typescriptProfile,
 ): Promise<ImprovementTask[]> {
-  // Heuristic: grep all exported symbols, then check if any other file
-  // imports that symbol. Anything with zero inbound imports is a candidate.
-  // We stay keyword-driven to avoid pulling in ts-morph.
-  // Both the export-discovery grep AND the usage-search grep must
-  // include `.tsx` — without it, React component files (which freely
-  // import types from neighboring `actions.ts`/`types.ts` modules)
-  // are invisible to the scanner. False-positive dead-code: the
-  // scanner saw an `export interface InviteState` in actions.ts, found
-  // no .ts file using it, and flagged it as unused — but invite-form.tsx
-  // imports it for `useActionState<InviteState, FormData>`. Removing
-  // the export broke the build.
-  const TS_INCLUDES = ['--include=*.ts', '--include=*.tsx'];
+  if (!profile.deadCode) return [];
+  const dc = profile.deadCode;
+  const includes = dc.fileExtensions.flatMap((ext) => ['--include=*.' + ext]);
 
   const { stdout: exportsOut } = await deps.runner.run(
     'grep',
     [
       '-rn',
       ...GREP_EXCLUDE_DIRS,
-      ...TS_INCLUDES,
+      ...includes,
       '-E',
-      '^export\\s+(const|function|class|interface|type)\\s+[A-Za-z_][A-Za-z0-9_]*',
+      // Pass the export regex source as-is to grep -E. The `^` anchor
+      // means "start of line" in grep too, which is what we want — a
+      // bare `export const` should match only at column 0, not nested
+      // inside another statement.
+      dc.exportRegex.source,
       '.',
     ],
     { cwd: repoRoot },
@@ -291,14 +257,20 @@ export async function scanDeadCode(
   if (!exportsOut.trim()) return [];
 
   const symbolByFile = new Map<string, Set<string>>();
+  // grep -rn line: ./path/file.ts:42:export const Foo = …
+  const grepLineRe = /^(.+?):\d+:(.*)$/;
   for (const line of exportsOut.split(/\r?\n/)) {
-    const m = line.match(/^(.+?):\d+:export\s+\w+\s+([A-Za-z_][A-Za-z0-9_]*)/);
-    if (!m) continue;
-    const [, rawFile, sym] = m;
-    if (!rawFile || !sym) continue;
+    const grepM = line.match(grepLineRe);
+    if (!grepM) continue;
+    const [, rawFile, body] = grepM;
+    if (!rawFile || !body) continue;
+    // Re-run the profile's export regex (anchored at line start) against
+    // the body to extract the symbol name.
+    const symMatch = body.match(dc.exportRegex);
+    if (!symMatch || !symMatch[1]) continue;
     const file = normalizePath(rawFile);
     const set = symbolByFile.get(file) ?? new Set<string>();
-    set.add(sym);
+    set.add(symMatch[1]);
     symbolByFile.set(file, set);
   }
 
@@ -306,15 +278,11 @@ export async function scanDeadCode(
   for (const [file, symbols] of symbolByFile) {
     const unused: string[] = [];
     for (const sym of symbols) {
-      const { stdout: usages } = await deps.runner.run(
-        'grep',
-        ['-rln', ...GREP_EXCLUDE_DIRS, ...TS_INCLUDES, '-E', `\\b${sym}\\b`, '.'],
-        { cwd: repoRoot },
-      );
+      const grep = dc.usageGrep(sym, GREP_EXCLUDE_DIRS);
+      const { stdout: usages } = await deps.runner.run(grep.cmd, grep.args, {
+        cwd: repoRoot,
+      });
       const files = usages.split(/\r?\n/).filter(Boolean);
-      // `file` is always a match (self-reference). Needs at least one other.
-      // Both sides must be normalized — grep prefixes `./`, but `file`
-      // in our map has already been normalized above.
       const externalUses = files.filter((f) => normalizePath(f) !== file);
       if (externalUses.length === 0) unused.push(sym);
     }
@@ -346,18 +314,6 @@ function makeTask(partial: {
     discoveredAt: new Date(),
     ...partial,
   };
-}
-
-function tryParseVitestJson(raw: string): Record<string, unknown> | null {
-  // vitest prints a JSON block sometimes wrapped in other output.
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) return null;
-  try {
-    return JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }
 
 function shortPath(p: string): string {

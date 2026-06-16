@@ -20,9 +20,12 @@ import {
 import {
   createDomainAnswerStore,
   findDomainQuestions,
+  pythonProfile,
   runLoop,
   scanCodebase,
+  typescriptProfile,
   type ImprovementLoopConfig,
+  type LanguageProfile,
   type LoopDeps,
   type TaskCategory,
 } from 'asil-improvement-loop';
@@ -48,6 +51,12 @@ interface Flags {
    *  LLM/Codex callers and budget manager are wrapped to capture every
    *  conversational turn for the deterministic analyzer to scan. */
   transcriptsDir: string | null;
+  /** Language profile selector. Default: ts. */
+  profile: 'ts' | 'python';
+}
+
+function resolveProfile(name: 'ts' | 'python'): LanguageProfile {
+  return name === 'python' ? pythonProfile : typescriptProfile;
 }
 
 function parseFlags(argv: readonly string[]): Flags | null {
@@ -57,6 +66,7 @@ function parseFlags(argv: readonly string[]): Flags | null {
     dryRun: false,
     skipQuestions: false,
     transcriptsDir: null,
+    profile: 'ts',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -75,6 +85,14 @@ function parseFlags(argv: readonly string[]): Flags | null {
     } else if (a === '--transcripts' && argv[i + 1]) {
       const raw = argv[i + 1]!;
       flags.transcriptsDir = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+      i += 1;
+    } else if (a === '--profile' && argv[i + 1]) {
+      const v = argv[i + 1]!;
+      if (v !== 'ts' && v !== 'python') {
+        console.error(`Unknown --profile value: ${v} (expected 'ts' or 'python')`);
+        return null;
+      }
+      flags.profile = v;
       i += 1;
     } else if (a === '--help' || a === '-h') {
       return null;
@@ -95,6 +113,9 @@ Options:
                       deterministic 5-failure-mode analyzer at the end
                       (writes findings.md alongside the per-task JSON files).
                       Zero extra LLM cost; analyzer is purely deterministic.
+  --profile NAME      Language profile for the scanner. One of: ts, python.
+                      Defaults to ts. Python requires pytest-json-report
+                      and mypy on PATH.
   --help, -h          Show this help`;
 
 export async function main(): Promise<void> {
@@ -134,11 +155,14 @@ export async function main(): Promise<void> {
   );
   console.log(`   Dry run: ${flags.dryRun}\n`);
 
+  const profile = resolveProfile(flags.profile);
+
   if (flags.dryRun) {
-    const scan = await scanCodebase(env.REPO_ROOT, {
-      runner,
-      fs: fileReader,
-    });
+    const scan = await scanCodebase(
+      env.REPO_ROOT,
+      { runner, fs: fileReader },
+      profile,
+    );
     console.log(
       `📋 Scan found ${scan.tasks.length} tasks (${scan.scanDurationMs}ms):\n`,
     );
@@ -293,6 +317,7 @@ export async function main(): Promise<void> {
     diff,
     blockedFiles,
     domainAnswerStore: domainStore,
+    profile,
   };
 
   const result = await runLoop(config, deps);
