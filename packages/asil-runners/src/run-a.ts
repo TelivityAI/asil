@@ -38,6 +38,8 @@ import {
   createFileFetcher,
   createFileReader,
   createGitOps,
+  createOpenAICompatibleCaller,
+  createOpenAICompatibleCodexCaller,
   loadEnv,
 } from './wiring.js';
 import { triageDomainQuestions } from './triage.js';
@@ -219,8 +221,26 @@ export async function main(): Promise<void> {
     });
   }
 
-  const realLLM = createAnthropicCaller(env.ANTHROPIC_API_KEY);
-  const realCodex = createCodexCaller(env.OPENAI_API_KEY);
+  // Pick the LLM adapter based on env. ASIL_LLM_BASE_URL → local-mode
+  // (Ollama, LM Studio, vLLM, llama.cpp server, OpenRouter, Azure
+  // OpenAI). Otherwise use the cloud Anthropic adapter. Same for the
+  // adversarial gate via ASIL_CODEX_BASE_URL.
+  const llmBaseUrl = process.env.ASIL_LLM_BASE_URL ?? '';
+  const llmModelId = process.env.ASIL_LLM_MODEL ?? 'sonnet';
+  const realLLM = llmBaseUrl
+    ? createOpenAICompatibleCaller({
+        baseUrl: llmBaseUrl,
+        apiKey: process.env.ASIL_LLM_API_KEY,
+      })
+    : createAnthropicCaller(env.ANTHROPIC_API_KEY);
+
+  const codexBaseUrl = process.env.ASIL_CODEX_BASE_URL ?? '';
+  const realCodex = codexBaseUrl
+    ? createOpenAICompatibleCodexCaller({
+        baseUrl: codexBaseUrl,
+        apiKey: process.env.ASIL_CODEX_API_KEY,
+      })
+    : createCodexCaller(env.OPENAI_API_KEY);
   const llm = sink ? instrumentLLMCaller(realLLM, sink) : realLLM;
   const codex = sink ? instrumentCodexCaller(realCodex, sink) : realCodex;
   const git = createGitOps(env.REPO_ROOT);
@@ -232,8 +252,13 @@ export async function main(): Promise<void> {
   const fileFetcher = createFileFetcher();
 
   const config: ImprovementLoopConfig = {
-    executionModel: 'sonnet',
-    reviewModel: 'sonnet',
+    // Cloud default: Sonnet for both. Local mode: caller can override
+    // via ASIL_LLM_MODEL (e.g. 'llama3.1:8b-instruct-q4_K_M') which the
+    // OpenAI-compatible adapter passes verbatim to the local server.
+    // Cast: ModelTier is opus|sonnet|haiku for cloud pricing; local
+    // ids fall through cost-estimator's unknown-model branch as $0.
+    executionModel: llmModelId as 'opus' | 'sonnet' | 'haiku',
+    reviewModel: llmModelId as 'opus' | 'sonnet' | 'haiku',
     maxTasksPerRun: flags.maxTasks,
     maxAttempts: 2,
     taskCooldownMs: 5000,
