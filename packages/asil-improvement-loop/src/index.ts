@@ -80,3 +80,14 @@ export {
   type ProposalResult,
   type ProposerOptions,
 } from './domain-question-proposer.js';
+export type {
+  CommandSpec,
+  CoverageEntry,
+  CoverageProfile,
+  DeadCodeProfile,
+  LanguageProfile,
+  TestFailure,
+  TypeError as ScannerTypeError,
+} from './language-profile.js';
+export { typescriptProfile } from './profiles/typescript.js';
+export { pythonProfile } from './profiles/python.js';

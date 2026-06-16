@@ -24,6 +24,7 @@ import type {
 } from './types.js';
 import type { CommandRunner, FileReader } from './scanner.js';
 import type { DiffApplier, FileFetcher } from './executor.js';
+import type { LanguageProfile } from './language-profile.js';
 import type { GitOperations } from './pr-builder.js';
 
 export interface LoopDeps {
@@ -55,6 +56,13 @@ export interface LoopDeps {
    * already been answered (those don't need to block the loop).
    */
   domainAnswerStore?: DomainAnswerStore;
+  /**
+   * Language profile driving the scanner's commands and parsers.
+   * Defaults to `typescriptProfile` (the reference) when omitted, so
+   * existing callers don't break. Pass `pythonProfile` (or a custom
+   * one) to scan Python codebases.
+   */
+  profile?: LanguageProfile;
 }
 
 export interface LoopResult {
@@ -104,10 +112,11 @@ export async function runLoop(
 
   // 1. Scan for new tasks. Scanning reads the real repo — it's
   //    read-only, so no worktree needed here.
-  const scan = await scanCodebase(config.repoRoot, {
-    runner: deps.runner,
-    fs: deps.fileReader,
-  });
+  const scan = await scanCodebase(
+    config.repoRoot,
+    { runner: deps.runner, fs: deps.fileReader },
+    deps.profile,
+  );
   const blocked = deps.blockedFiles ?? new Set<string>();
   for (const task of scan.tasks) {
     if (config.skipCategories.includes(task.category)) continue;
