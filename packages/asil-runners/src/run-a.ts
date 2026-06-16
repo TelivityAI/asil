@@ -5,8 +5,18 @@
  * --dry-run to scan and report without executing.
  */
 import { execSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import {
+  EventSink,
+  instrumentCodexCaller,
+  instrumentLLMCaller,
+  readEvents,
+  runAnalyzer,
+  wrapBudgetManager,
+  writePerTaskTranscripts,
+} from 'asil-analyzer';
 import {
   createDomainAnswerStore,
   findDomainQuestions,
@@ -34,6 +44,10 @@ interface Flags {
   skipCategories: TaskCategory[];
   dryRun: boolean;
   skipQuestions: boolean;
+  /** Directory to write per-task transcripts + findings.md. When set, the
+   *  LLM/Codex callers and budget manager are wrapped to capture every
+   *  conversational turn for the deterministic analyzer to scan. */
+  transcriptsDir: string | null;
 }
 
 function parseFlags(argv: readonly string[]): Flags | null {
@@ -42,6 +56,7 @@ function parseFlags(argv: readonly string[]): Flags | null {
     skipCategories: [],
     dryRun: false,
     skipQuestions: false,
+    transcriptsDir: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -57,6 +72,10 @@ function parseFlags(argv: readonly string[]): Flags | null {
       flags.dryRun = true;
     } else if (a === '--skip-questions') {
       flags.skipQuestions = true;
+    } else if (a === '--transcripts' && argv[i + 1]) {
+      const raw = argv[i + 1]!;
+      flags.transcriptsDir = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+      i += 1;
     } else if (a === '--help' || a === '-h') {
       return null;
     }
@@ -72,6 +91,10 @@ Options:
   --dry-run           Scan and report tasks without executing
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
+  --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
+                      deterministic 5-failure-mode analyzer at the end
+                      (writes findings.md alongside the per-task JSON files).
+                      Zero extra LLM cost; analyzer is purely deterministic.
   --help, -h          Show this help`;
 
 export async function main(): Promise<void> {
@@ -152,10 +175,35 @@ export async function main(): Promise<void> {
     );
   }
 
-  const llm = createAnthropicCaller(env.ANTHROPIC_API_KEY);
-  const codex = createCodexCaller(env.OPENAI_API_KEY);
+  // When --transcripts is set, wrap every LLM/Codex call and the
+  // BudgetManager.allocate boundary so the analyzer can attribute each
+  // conversational turn to its task. The wrapping is transparent — the
+  // returned LLMCaller/CodexCaller match the same shape as the real
+  // ones — so the rest of the runner is unchanged.
+  let sink: EventSink | null = null;
+  if (flags.transcriptsDir) {
+    mkdirSync(flags.transcriptsDir, { recursive: true });
+    sink = new EventSink(join(flags.transcriptsDir, 'events.jsonl'));
+    sink.append({
+      kind: 'run-start',
+      ts: new Date().toISOString(),
+      extra: {
+        repoRoot: env.REPO_ROOT,
+        maxTasks: flags.maxTasks,
+        skipCategories: flags.skipCategories,
+      },
+    });
+  }
+
+  const realLLM = createAnthropicCaller(env.ANTHROPIC_API_KEY);
+  const realCodex = createCodexCaller(env.OPENAI_API_KEY);
+  const llm = sink ? instrumentLLMCaller(realLLM, sink) : realLLM;
+  const codex = sink ? instrumentCodexCaller(realCodex, sink) : realCodex;
   const git = createGitOps(env.REPO_ROOT);
   const costInfra = createCostInfra(env.REPO_ROOT);
+  const budgetManager = sink
+    ? wrapBudgetManager(costInfra.budgetManager, sink)
+    : costInfra.budgetManager;
   const diff = createDiffApplier();
   const fileFetcher = createFileFetcher();
 
@@ -238,7 +286,7 @@ export async function main(): Promise<void> {
     codex,
     git,
     tracker: costInfra.tracker,
-    budgetManager: costInfra.budgetManager,
+    budgetManager,
     runner,
     fileReader,
     fileFetcher,
@@ -320,6 +368,27 @@ export async function main(): Promise<void> {
       console.log(`   [${outcome.status}] ${outcome.taskId}`);
       console.log(`      ${reason}`);
     }
+  }
+
+  // When --transcripts was set, split the events stream into per-task
+  // JSON files and run the deterministic 5-failure-mode analyzer.
+  // Zero LLM calls; purely lexical scans over the captured transcripts.
+  if (sink && flags.transcriptsDir) {
+    const eventsFile = join(flags.transcriptsDir, 'events.jsonl');
+    sink.append({
+      kind: 'note',
+      ts: new Date().toISOString(),
+      text: 'run-completed',
+      details: {
+        tasksProcessed: result.tasksProcessed,
+        prsOpened: result.prsOpened,
+      },
+    });
+    const split = writePerTaskTranscripts(readEvents(eventsFile), flags.transcriptsDir);
+    const findingsPath = join(flags.transcriptsDir, 'findings.md');
+    runAnalyzer({ transcriptsDir: flags.transcriptsDir, outFile: findingsPath });
+    console.log(`\n📝 Transcripts: ${split.tasksWritten} task file(s) written.`);
+    console.log(`📊 Analyzer findings: ${findingsPath}`);
   }
 }
 

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.0",
+    "asil-analyzer": "workspace:*",
     "asil-cost-controller": "workspace:*",
     "asil-improvement-loop": "workspace:*",
     "asil-thought-multiplier": "workspace:*",
