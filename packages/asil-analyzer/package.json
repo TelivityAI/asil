@@ -1,0 +1,25 @@
+{
+  "name": "asil-analyzer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "description": "Deterministic reasoning-quality analyzer for ASIL transcripts: captures LLM/Codex calls, splits per-task, scans for five failure modes (sycophancy, first-item bias, belief-action gap, drift, multi-hop decay). Zero LLM calls in analysis.",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "asil-cost-controller": "workspace:*",
+    "asil-improvement-loop": "workspace:*",
+    "decimal.js": "^10.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.0"
+  }
+}

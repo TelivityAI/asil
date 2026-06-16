@@ -78,6 +78,10 @@ scan → cycle-detect → triage domain questions → for each task:
 - **Adversarial gate** sends the diff to a different model (different provider, different family) to challenge the work
 - **Domain guard** blocks the PR if the diff touches a `// DOMAIN_QUESTION:` zone with no resolved answer
 
+### asil-analyzer — deterministic reasoning-quality audit
+
+Optional layer. Pass `--transcripts <dir>` to `pnpm --filter asil-runners run:a` and the runner captures every LLM/Codex call as structured JSON, then runs five deterministic detectors (sycophancy, first-item bias, belief-action gap, drift, multi-hop decay) and writes a `findings.md` next to the transcripts. No LLM calls in the analysis — purely lexical / regex / statistical. Zero extra API cost. See [`packages/asil-analyzer/README.md`](packages/asil-analyzer/README.md) for the detector definitions and the deterministic-only trade-off.
+
 ## Quick start
 
 ```bash
