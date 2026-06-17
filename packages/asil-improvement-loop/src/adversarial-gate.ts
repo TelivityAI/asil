@@ -21,7 +21,16 @@ export async function adversarialReview(
 ): Promise<AdversarialReviewResult> {
   const prompt = buildAdversarialPrompt(execution, selfReviewResult);
   const response = await codex.call(prompt, codexModel);
-  return parseAdversarialResponse(execution.taskId, response.content);
+  const parsed = parseAdversarialResponse(execution.taskId, response.content);
+  return {
+    ...parsed,
+    // Surface token spend so the loop can budget-account the gate.
+    // Mocks (and adapters that don't report usage) yield 0. (#2)
+    tokenUsage: {
+      inputTokens: response.inputTokens ?? 0,
+      outputTokens: response.outputTokens ?? 0,
+    },
+  };
 }
 
 export function buildAdversarialPrompt(
@@ -78,7 +87,7 @@ export function buildAdversarialPrompt(
 export function parseAdversarialResponse(
   taskId: string,
   content: string,
-): AdversarialReviewResult {
+): Omit<AdversarialReviewResult, 'tokenUsage'> {
   const parsed = tryParseJson(content);
   if (!parsed) {
     // Fail closed.

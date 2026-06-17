@@ -47,6 +47,7 @@ const self: SelfReviewResult = {
   allApproved: true,
   aggregatedConcerns: ['watch out for injection'],
   recommendation: 'proceed',
+  tokenUsage: { inputTokens: 3, outputTokens: 3 },
 };
 
 const adversarial: AdversarialReviewResult = {
@@ -55,6 +56,7 @@ const adversarial: AdversarialReviewResult = {
   reasoning: 'looks ok',
   issuesFound: [],
   severity: 'pass',
+  tokenUsage: { inputTokens: 0, outputTokens: 0 },
 };
 
 describe('pr-builder', () => {

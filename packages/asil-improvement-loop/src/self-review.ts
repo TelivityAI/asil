@@ -89,12 +89,23 @@ export async function selfReview(
       ? 'revise'
       : 'reject';
 
+  // Aggregate the three persona calls' token spend so the loop can
+  // record self-review against the budget checkpoint (Codex review #2).
+  const tokenUsage = reviews.reduce(
+    (sum, r) => ({
+      inputTokens: sum.inputTokens + r.tokenUsage.inputTokens,
+      outputTokens: sum.outputTokens + r.tokenUsage.outputTokens,
+    }),
+    { inputTokens: 0, outputTokens: 0 },
+  );
+
   return {
     taskId: execution.taskId,
     reviews,
     allApproved,
     aggregatedConcerns,
     recommendation,
+    tokenUsage,
   };
 }
 

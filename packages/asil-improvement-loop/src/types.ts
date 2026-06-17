@@ -114,6 +114,9 @@ export interface SelfReviewResult {
   allApproved: boolean;
   aggregatedConcerns: string[];
   recommendation: 'proceed' | 'revise' | 'reject';
+  /** Aggregate token spend across the three persona calls, so the loop
+   *  can account self-review against the budget (Codex review #2). */
+  tokenUsage: { inputTokens: number; outputTokens: number };
 }
 
 export type AdversarialSeverity =
@@ -128,6 +131,10 @@ export interface AdversarialReviewResult {
   reasoning: string;
   issuesFound: string[];
   severity: AdversarialSeverity;
+  /** Token spend for the adversarial call, so the loop can account it
+   *  against the budget. Zero when the caller reports no usage
+   *  (e.g. a mock). (Codex review #2.) */
+  tokenUsage: { inputTokens: number; outputTokens: number };
 }
 
 export type TaskOutcomeStatus =
@@ -186,9 +193,15 @@ export interface LLMResponse {
   outputTokens: number;
 }
 
-/** Separate call interface for Codex — different provider, distinct mock surface. */
+/** Separate call interface for Codex — different provider, distinct mock surface.
+ *  Token fields are optional so existing mocks returning `{ content }` keep
+ *  working; real adapters populate them so adversarial-gate spend is
+ *  budget-accounted (Codex review #2). */
 export interface CodexCaller {
-  call(prompt: string, model: string): Promise<{ content: string }>;
+  call(
+    prompt: string,
+    model: string,
+  ): Promise<{ content: string; inputTokens?: number; outputTokens?: number }>;
 }
 
 // ---------------------------------------------------------------------------

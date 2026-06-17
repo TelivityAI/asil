@@ -133,7 +133,7 @@ export function createCodexCaller(
   const maxTokens = opts.maxTokens ?? 4096;
 
   return {
-    async call(prompt: string, model: string): Promise<{ content: string }> {
+    async call(prompt: string, model: string) {
       const response = await fetchImpl(
         'https://api.openai.com/v1/chat/completions',
         {
@@ -158,9 +158,16 @@ export function createCodexCaller(
 
       const data = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
 
-      return { content: data.choices?.[0]?.message?.content ?? '' };
+      // Surface token usage so the adversarial gate's spend is
+      // budget-accounted (Codex review #2).
+      return {
+        content: data.choices?.[0]?.message?.content ?? '',
+        inputTokens: data.usage?.prompt_tokens ?? 0,
+        outputTokens: data.usage?.completion_tokens ?? 0,
+      };
     },
   };
 }
@@ -275,20 +282,34 @@ export function createOpenAICompatibleCaller(
 }
 
 /**
- * CodexCaller variant (no token surface). Useful when the adversarial
- * gate should also run against a local model rather than OpenAI cloud.
- * Wraps `createOpenAICompatibleCaller` and drops the token fields.
+ * CodexCaller variant for the adversarial gate against a local model.
+ * Reports token usage from the server's `usage` block when present,
+ * else estimates via chars/4 — so adversarial spend is budget-accounted
+ * even on local servers that omit usage (Codex review #2).
  */
 export function createOpenAICompatibleCodexCaller(
   opts: OpenAICompatibleOptions,
 ): CodexCaller {
+  const estimate = opts.estimateTokens ?? defaultEstimator;
   return {
     async call(prompt, model) {
       const data = await postOpenAICompatible(opts, {
         model,
         messages: [{ role: 'user', content: prompt }],
       });
-      return { content: data.choices?.[0]?.message?.content ?? '' };
+      const content = data.choices?.[0]?.message?.content ?? '';
+      const usage = data.usage ?? {};
+      return {
+        content,
+        inputTokens:
+          typeof usage.prompt_tokens === 'number'
+            ? usage.prompt_tokens
+            : estimate(prompt),
+        outputTokens:
+          typeof usage.completion_tokens === 'number'
+            ? usage.completion_tokens
+            : estimate(content),
+      };
     },
   };
 }

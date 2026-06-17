@@ -122,6 +122,33 @@ describe('runLoop — integration', () => {
     expect(git.cleanedUp[0]).toMatch(/asil-auto-/);
   });
 
+  it('reports total token usage including self-review + adversarial, not just the executor (Codex #2)', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-tokens' }));
+
+    const git = mockGit('https://example.com/pr/2');
+    const result = await runLoop(cfg(), {
+      llm: goodLLM(), // executor reply = 200 in / 100 out; personas add more
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git,
+      tracker,
+      budgetManager,
+      runner: goodRunner(),
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(result.outcomes[0]?.status).toBe('pr-opened');
+    // The executor alone reported 200 input tokens. The reported total
+    // must EXCEED that — proving the three persona self-review calls were
+    // added to the accounted total rather than silently dropped.
+    expect(result.outcomes[0]?.totalTokenUsage.inputTokens).toBeGreaterThan(200);
+    expect(result.outcomes[0]?.totalTokenUsage.outputTokens).toBeGreaterThan(100);
+  });
+
   it('pnpm install failure in the worktree → task aborts as infra-failed, LLM never called, worktree cleaned (Codex #6)', async () => {
     const queue = new TaskQueue(queuePath);
     queue.enqueue(mkTask({ id: 't-install-fail' }));
