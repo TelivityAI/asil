@@ -61,6 +61,33 @@ export async function runPapa(
   // 1. Route.
   const routing = routeRequest(request, config.maxThinkers);
 
+  // forceCheck BEFORE the fan-out: a request that's already at the
+  // budget ceiling must not launch N parallel thinker calls. Without
+  // this, the only check was after the fan-out completed — too late to
+  // prevent the spend. (Codex review #2.)
+  if (checkpoint.forceCheck().recommendation === 'kill') {
+    const reason = 'Budget exceeded before thinker fan-out';
+    checkpoint.kill(reason);
+    return {
+      routing,
+      thinkerOutputs: [],
+      synthesis: {
+        requestId: request.id,
+        mergedRecommendations: [],
+        resolvedConflicts: [],
+        unresolvedConcerns: [],
+        escalateToHuman: true,
+        escalationReason: reason,
+        buildSteps: [],
+        thinkerContributions: {},
+      },
+      brief: null,
+      escalated: true,
+      escalationReason: reason,
+      totalCost: { inputTokens: 0, outputTokens: 0 },
+    };
+  }
+
   // 2. Fan out in parallel. Each thinker is independent.
   const outputs = await Promise.all(
     routing.activatedThinkers.map((role) =>

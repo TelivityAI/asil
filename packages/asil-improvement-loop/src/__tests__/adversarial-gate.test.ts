@@ -28,6 +28,7 @@ function mkSelfReview(allApproved = true): SelfReviewResult {
     allApproved,
     aggregatedConcerns: allApproved ? [] : ['something'],
     recommendation: allApproved ? 'proceed' : 'revise',
+    tokenUsage: { inputTokens: 0, outputTokens: 0 },
   };
 }
 

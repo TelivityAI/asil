@@ -2,6 +2,7 @@ import {
   BudgetManager,
   CostCheckpoint,
   TokenTracker,
+  type ModelTier,
 } from 'asil-cost-controller';
 import { TaskQueue } from './task-queue.js';
 import { scanCodebase } from './scanner.js';
@@ -324,8 +325,39 @@ export async function runLoop(
         break;
       }
 
+      // Running tally of ALL token spend on this task — executor +
+      // self-review + adversarial. Reported in the outcome and used to
+      // keep the budget honest (Codex review #2: review/adversarial
+      // spend used to be invisible to both the report and the cap).
+      const taskTokens = {
+        inputTokens: execution.tokenUsage.inputTokens,
+        outputTokens: execution.tokenUsage.outputTokens,
+      };
+
+      // forceCheck before the self-review fan-out: a task already at the
+      // ceiling must not launch three more persona calls.
+      if (checkpoint.forceCheck().recommendation === 'kill') {
+        checkpoint.kill('Budget exceeded before self-review');
+        queue.complete(task.id, 'failed', 'Budget exceeded');
+        outcomes.push({
+          taskId: task.id,
+          status: 'budget-exceeded',
+          totalTokenUsage: { ...taskTokens },
+          completedAt: new Date(),
+        });
+        budgetExhausted = true;
+        break;
+      }
+
       // 5. Self-review.
       const review = await selfReview(execution, deps.llm, config.reviewModel);
+      taskTokens.inputTokens += review.tokenUsage.inputTokens;
+      taskTokens.outputTokens += review.tokenUsage.outputTokens;
+      const reviewCheck = checkpoint.recordAndCheck(
+        review.tokenUsage.inputTokens,
+        review.tokenUsage.outputTokens,
+        config.reviewModel,
+      );
 
       if (review.recommendation === 'reject') {
         checkpoint.complete();
@@ -341,10 +373,24 @@ export async function runLoop(
           taskId: task.id,
           status: 'rejected-self-review',
           selfReview: review,
-          totalTokenUsage: execution.tokenUsage,
+          totalTokenUsage: { ...taskTokens },
           completedAt: new Date(),
         });
         continue;
+      }
+
+      if (reviewCheck.recommendation === 'kill') {
+        checkpoint.kill('Budget exceeded after self-review');
+        queue.complete(task.id, 'failed', 'Budget exceeded');
+        outcomes.push({
+          taskId: task.id,
+          status: 'budget-exceeded',
+          selfReview: review,
+          totalTokenUsage: { ...taskTokens },
+          completedAt: new Date(),
+        });
+        budgetExhausted = true;
+        break;
       }
 
       // 6. Adversarial gate.
@@ -353,6 +399,17 @@ export async function runLoop(
         review,
         deps.codex,
         config.codexConfig.model,
+      );
+      taskTokens.inputTokens += adversarial.tokenUsage.inputTokens;
+      taskTokens.outputTokens += adversarial.tokenUsage.outputTokens;
+      const adversarialCheck = checkpoint.recordAndCheck(
+        adversarial.tokenUsage.inputTokens,
+        adversarial.tokenUsage.outputTokens,
+        // The codex model is a free-form id (e.g. 'gpt-4o'), not a
+        // ModelTier. The cost estimator returns $0 for ids absent from
+        // the pricing table, so tokens are still tracked even though the
+        // wire-cost line is $0. Cast is the localized type bridge.
+        config.codexConfig.model as ModelTier,
       );
 
       if (!adversarial.approved) {
@@ -368,10 +425,25 @@ export async function runLoop(
           status: 'rejected-adversarial',
           selfReview: review,
           adversarialReview: adversarial,
-          totalTokenUsage: execution.tokenUsage,
+          totalTokenUsage: { ...taskTokens },
           completedAt: new Date(),
         });
         continue;
+      }
+
+      if (adversarialCheck.recommendation === 'kill') {
+        checkpoint.kill('Budget exceeded after adversarial review');
+        queue.complete(task.id, 'failed', 'Budget exceeded');
+        outcomes.push({
+          taskId: task.id,
+          status: 'budget-exceeded',
+          selfReview: review,
+          adversarialReview: adversarial,
+          totalTokenUsage: { ...taskTokens },
+          completedAt: new Date(),
+        });
+        budgetExhausted = true;
+        break;
       }
 
       // 7. All gates passed — commit + push from the worktree + open PR.
@@ -384,6 +456,12 @@ export async function runLoop(
         workDir,
       );
       checkpoint.complete();
+
+      // buildAndOpenPR reports execution-only token usage; replace it
+      // with the full task tally (executor + self-review + adversarial)
+      // so the success outcome's total matches the budget-accounted
+      // spend (Codex review #2).
+      outcome.totalTokenUsage = { ...taskTokens };
 
       if (outcome.status === 'pr-opened') {
         // Only mark completed when the PR actually opened. A silent

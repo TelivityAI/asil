@@ -178,6 +178,39 @@ describe('wiring', () => {
       expect(body.messages[0]).toEqual({ role: 'user', content: 'prompt here' });
     });
 
+    it('surfaces token usage from the OpenAI usage block (Codex review #2)', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: true,
+          async json() {
+            return {
+              choices: [{ message: { content: 'reply' } }],
+              usage: { prompt_tokens: 30, completion_tokens: 8 },
+            };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createCodexCaller('k', { fetchImpl: fakeFetch });
+      const res = await caller.call('p', 'gpt-4o');
+      expect(res.inputTokens).toBe(30);
+      expect(res.outputTokens).toBe(8);
+    });
+
+    it('reports zero tokens when usage is absent (does not throw)', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'reply' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createCodexCaller('k', { fetchImpl: fakeFetch });
+      const res = await caller.call('p', 'gpt-4o');
+      expect(res.inputTokens).toBe(0);
+      expect(res.outputTokens).toBe(0);
+    });
+
     it('throws a clear error when the OpenAI API returns non-OK', async () => {
       const fakeFetch: typeof fetch = (async () =>
         ({
@@ -354,14 +387,17 @@ describe('wiring', () => {
   });
 
   describe('createOpenAICompatibleCodexCaller', () => {
-    it('uses a single user message and returns just { content }', async () => {
+    it('uses a single user message and reports token usage from the server', async () => {
       let capturedInit: RequestInit | undefined;
       const fakeFetch: typeof fetch = (async (_url: string, init?: RequestInit) => {
         capturedInit = init;
         return {
           ok: true,
           async json() {
-            return { choices: [{ message: { content: 'adversarial reply' } }] };
+            return {
+              choices: [{ message: { content: 'adversarial reply' } }],
+              usage: { prompt_tokens: 12, completion_tokens: 4 },
+            };
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any;
@@ -377,8 +413,28 @@ describe('wiring', () => {
       expect(body.messages).toEqual([
         { role: 'user', content: 'challenge this diff' },
       ]);
-      // The result shape matches CodexCaller — no token fields.
-      expect('inputTokens' in res).toBe(false);
+      // CodexCaller now surfaces tokens so the adversarial gate is
+      // budget-accounted (Codex review #2).
+      expect(res.inputTokens).toBe(12);
+      expect(res.outputTokens).toBe(4);
+    });
+
+    it('estimates tokens via chars/4 when the server omits usage', async () => {
+      const fakeFetch: typeof fetch = (async () =>
+        ({
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'abcdefgh' } }] };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any) as any;
+      const caller = createOpenAICompatibleCodexCaller({
+        baseUrl: 'http://x/v1',
+        fetchImpl: fakeFetch,
+      });
+      const res = await caller.call('abcd', 'm'); // prompt 4 chars → 1
+      expect(res.inputTokens).toBe(1);
+      expect(res.outputTokens).toBe(2); // content 8 chars → 2
     });
   });
 
