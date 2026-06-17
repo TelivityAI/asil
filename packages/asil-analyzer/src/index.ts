@@ -33,7 +33,10 @@ export type {
 } from './transcript-writer.js';
 
 export { instrumentLLMCaller, instrumentCodexCaller } from './instrumented-callers.js';
+export type { InstrumentOptions } from './instrumented-callers.js';
 export { wrapBudgetManager } from './budget-instrument.js';
+export { redactSecrets, DEFAULT_REDACTION_RULES } from './redact.js';
+export type { RedactionRule } from './redact.js';
 
 export {
   analyze,
