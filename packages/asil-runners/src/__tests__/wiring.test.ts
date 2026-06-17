@@ -14,6 +14,7 @@ import {
   createCodexCaller,
   createCommandRunner,
   createCostInfra,
+  scrubbedEnv,
   createDiffApplier,
   createFileFetcher,
   createFileReader,
@@ -438,6 +439,38 @@ describe('wiring', () => {
     });
   });
 
+  describe('scrubbedEnv (Codex #1 — Level 1 sandbox)', () => {
+    it('strips secret-shaped vars but keeps PATH/HOME/pnpm config', () => {
+      const src = {
+        PATH: '/usr/bin',
+        HOME: '/home/x',
+        npm_config_registry: 'https://registry.npmjs.org',
+        ANTHROPIC_API_KEY: 'sk-ant-secret',
+        OPENAI_API_KEY: 'sk-oai-secret',
+        GITHUB_TOKEN: 'ghp_secret',
+        GH_TOKEN: 'gho_secret',
+        AWS_SECRET_ACCESS_KEY: 'aws-secret',
+        MY_DB_PASSWORD: 'hunter2',
+        SOME_SESSION_TOKEN: 'abc',
+        REGULAR_VAR: 'fine',
+      };
+      const out = scrubbedEnv(src);
+      // Kept — needed for pnpm/tsc/vitest to run.
+      expect(out.PATH).toBe('/usr/bin');
+      expect(out.HOME).toBe('/home/x');
+      expect(out.npm_config_registry).toBe('https://registry.npmjs.org');
+      expect(out.REGULAR_VAR).toBe('fine');
+      // Stripped — secrets must never reach untrusted target-repo code.
+      expect(out.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(out.OPENAI_API_KEY).toBeUndefined();
+      expect(out.GITHUB_TOKEN).toBeUndefined();
+      expect(out.GH_TOKEN).toBeUndefined();
+      expect(out.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(out.MY_DB_PASSWORD).toBeUndefined();
+      expect(out.SOME_SESSION_TOKEN).toBeUndefined();
+    });
+  });
+
   describe('createCommandRunner', () => {
     it('captures stdout and exitCode=0 for a successful command', async () => {
       const runner = createCommandRunner();
@@ -446,6 +479,36 @@ describe('wiring', () => {
       });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toMatch(/ok/);
+    });
+
+    it('with { env } replaces the child environment — secrets are not visible to spawned commands (Codex #1)', async () => {
+      // A spawned process should NOT see a secret that the parent has,
+      // when the runner is built with a scrubbed env.
+      process.env.ASIL_TEST_SECRET = 'leak-me';
+      try {
+        const scrubbed = scrubbedEnv({ PATH: process.env.PATH, ASIL_TEST_SECRET: 'leak-me-too' });
+        // (ASIL_TEST_SECRET doesn't match a secret pattern, so prove the
+        //  env-REPLACEMENT itself isolates: build a runner with an env
+        //  that simply omits it.)
+        const runner = createCommandRunner({ env: { PATH: process.env.PATH ?? '' } });
+        const res = await runner.run(
+          'node',
+          ['-e', 'process.stdout.write(String(process.env.ASIL_TEST_SECRET))'],
+          { cwd: process.cwd() },
+        );
+        expect(res.stdout.trim()).toBe('undefined');
+        // sanity: the inherited runner WOULD see it
+        const inherit = createCommandRunner();
+        const res2 = await inherit.run(
+          'node',
+          ['-e', 'process.stdout.write(String(process.env.ASIL_TEST_SECRET))'],
+          { cwd: process.cwd() },
+        );
+        expect(res2.stdout.trim()).toBe('leak-me');
+        void scrubbed;
+      } finally {
+        delete process.env.ASIL_TEST_SECRET;
+      }
     });
 
     it('captures non-zero exitCode without throwing', async () => {

@@ -15,3 +15,7 @@ dist/
 .asil/
 *.log
 coverage/
+
+# Internal/private review + design notes — kept in private KB, never in the public repo
+CODEX_REVIEW.md
+docs/design/

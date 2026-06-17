@@ -221,11 +221,18 @@ export async function runLoop(
       // 3b. Install dependencies in the worktree so typecheck + tests work.
       //     Without this the clone has no node_modules and every tsc/vitest
       //     call fails with "Cannot find module" errors.
-      const installResult = await deps.runner.run(
-        'pnpm',
-        ['install', '--frozen-lockfile'],
-        { cwd: workDir },
-      );
+      // --ignore-scripts by default: a target repo's install lifecycle
+      // scripts (postinstall/prepare) are arbitrary code we should not
+      // run with ASIL's privileges. Opt back in with
+      // ASIL_ALLOW_INSTALL_SCRIPTS=1 for repos that genuinely need them
+      // (the operator then explicitly accepts the risk). (Codex #1.)
+      const allowInstallScripts = process.env.ASIL_ALLOW_INSTALL_SCRIPTS === '1';
+      const installArgs = allowInstallScripts
+        ? ['install', '--frozen-lockfile']
+        : ['install', '--frozen-lockfile', '--ignore-scripts'];
+      const installResult = await deps.runner.run('pnpm', installArgs, {
+        cwd: workDir,
+      });
       if (installResult.exitCode !== 0) {
         // Install failure is fatal: with no node_modules, every
         // downstream typecheck/test runs in a known-bad environment and
