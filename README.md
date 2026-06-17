@@ -86,6 +86,15 @@ Optional layer. Pass `--transcripts <dir>` to `pnpm --filter asil-runners run:a`
 
 ASIL can run against any HTTP server speaking the OpenAI-compatible `/v1/chat/completions` API: **Ollama, LM Studio, vLLM, llama.cpp server, OpenRouter, Azure OpenAI**. Set `ASIL_LLM_BASE_URL` and `ASIL_LLM_MODEL` and the runner uses the local adapter instead of cloud Anthropic. `ANTHROPIC_API_KEY` is no longer required in local mode. Cost-controller token caps still bite (chars/4 fallback when the server omits `usage`); the dollar number reports as $0 since local inference has no wire cost. Full walkthrough — including the mixed cloud-execution + local-adversarial-gate recipe — in [`examples/local-llm.md`](examples/local-llm.md).
 
+### Running against untrusted repos — sandbox
+
+ASIL executes target-repo code (`pnpm install`, build, tests) inside disposable worktrees. To keep that safe:
+
+- **Secrets are stripped from the execution environment.** The runner that executes target-repo commands gets a scrubbed env — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and git/GitHub tokens are never in scope, so a malicious `postinstall`/build/test script can't exfiltrate them. The git/`gh` operations that genuinely need a token use a separate, full-env runner (credential separation).
+- **Install lifecycle scripts are disabled by default** (`pnpm install --ignore-scripts`). Opt back in with `ASIL_ALLOW_INSTALL_SCRIPTS=1` only for repos you trust.
+
+This is process-level hardening (Level 1). It removes the credential-exfiltration vector but does **not** sandbox the filesystem or network — a hostile repo's build/test can still read local files or make network calls. For genuinely adversarial input, run ASIL inside a container with `--network=none` (containerized exec is a planned opt-in). See the design notes in the private KB.
+
 ### Languages — Python profile
 
 The scanner is profile-driven (`LanguageProfile` interface). TypeScript is the reference; Python ships out of the box. Select via `--profile <ts|python>`. Python requires `pytest` with the `pytest-json-report` plugin, `mypy`, and `coverage.py`. Adding Go or Rust is a "write a profile" task, not a fork.

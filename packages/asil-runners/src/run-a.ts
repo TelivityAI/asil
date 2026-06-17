@@ -34,6 +34,7 @@ import {
   createCodexCaller,
   createCommandRunner,
   createCostInfra,
+  scrubbedEnv,
   createDiffApplier,
   createFileFetcher,
   createFileReader,
@@ -147,7 +148,14 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const runner = createCommandRunner();
+  // The loop's runner executes UNTRUSTED target-repo code (pnpm
+  // install/build/test, tsc, grep) inside worktrees. Strip secrets from
+  // its environment so a malicious postinstall/build/test script can't
+  // exfiltrate ANTHROPIC_API_KEY / OPENAI_API_KEY / git tokens. The LLM
+  // callers hold their keys in THIS process (read at construction), so
+  // they're unaffected. GitOps (push / gh pr create) uses its own
+  // full-env runner — credential separation. (Codex review #1, Level 1.)
+  const runner = createCommandRunner({ env: scrubbedEnv() });
   const fileReader = createFileReader();
 
   console.log('\n🔄 System A — Autonomous Improvement Loop');

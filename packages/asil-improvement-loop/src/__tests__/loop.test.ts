@@ -149,6 +149,42 @@ describe('runLoop — integration', () => {
     expect(result.outcomes[0]?.totalTokenUsage.outputTokens).toBeGreaterThan(100);
   });
 
+  it('installs target-repo deps with --ignore-scripts by default (Codex #1 — no lifecycle-script RCE)', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-ignore-scripts' }));
+
+    const installArgsSeen: string[][] = [];
+    const runner = mockRunner([
+      {
+        match: (cmd, args) => {
+          if (cmd === 'pnpm' && args.includes('install')) installArgsSeen.push(args);
+          return cmd === 'pnpm' && args.includes('install');
+        },
+        exitCode: 0,
+      },
+      { match: (cmd) => cmd === 'diff', exitCode: 1, stdout: CANNED_UNIFIED_DIFF },
+      { match: (cmd) => cmd === 'pnpm', exitCode: 0 },
+      { match: (cmd) => cmd === 'grep', exitCode: 0 },
+    ]);
+
+    await runLoop(cfg(), {
+      llm: goodLLM(),
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git: mockGit('https://example.com/pr/3'),
+      tracker,
+      budgetManager,
+      runner,
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(installArgsSeen.length).toBeGreaterThan(0);
+    expect(installArgsSeen[0]).toContain('--ignore-scripts');
+  });
+
   it('pnpm install failure in the worktree → task aborts as infra-failed, LLM never called, worktree cleaned (Codex #6)', async () => {
     const queue = new TaskQueue(queuePath);
     queue.enqueue(mkTask({ id: 't-install-fail' }));

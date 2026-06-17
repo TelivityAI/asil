@@ -314,9 +314,59 @@ export function createOpenAICompatibleCodexCaller(
   };
 }
 
+export interface CommandRunnerOptions {
+  /** Complete environment for spawned commands. When set, replaces the
+   *  inherited process env entirely — used to keep secrets out of the
+   *  environment of untrusted target-repo commands (install/build/test).
+   *  Leave undefined to inherit the full parent env (the privileged
+   *  runner used for git/gh operations). (Codex review #1, Level 1.) */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Environment-variable names whose VALUES are secrets and must never
+ * reach a spawned target-repo command (where a malicious postinstall,
+ * build, or test script could exfiltrate them). Used by `scrubbedEnv`.
+ */
+const SECRET_ENV_PATTERNS: RegExp[] = [
+  // Secret-shaped SUFFIXES catch the common cases (NPM_TOKEN, DB_PASSWORD,
+  // *_API_KEY, *_SECRET, etc.) without touching pnpm's npm_config_* vars.
+  /_(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$/i,
+  // Provider prefixes for vars that DON'T end in a secret-shaped suffix.
+  // Deliberately excludes a blanket `NPM_` (would strip npm_config_*).
+  /^(ANTHROPIC|OPENAI|GH|GITHUB|AWS|GCP|GOOGLE|AZURE|SLACK|STRIPE|HF|HUGGINGFACE)_/i,
+  /^(API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY)$/i,
+];
+
+/**
+ * Build an environment for untrusted commands by removing secret-shaped
+ * variables from the inherited env. Default-allow (keeps PATH, HOME,
+ * npm/pnpm config, etc. so pnpm/tsc/vitest still run) but strips
+ * anything matching a secret pattern. This is the Level-1 sandbox
+ * boundary: the credentials ASIL injects (ANTHROPIC_API_KEY,
+ * OPENAI_API_KEY, GH/GITHUB tokens) are no longer in scope when the
+ * loop runs `pnpm install`/build/test inside a worktree of the target
+ * repo. (Codex review #1.)
+ */
+export function scrubbedEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (SECRET_ENV_PATTERNS.some((re) => re.test(key))) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 /** Real CommandRunner via execFile. Captures stdout, stderr, and exit code
- *  without throwing — callers inspect exitCode to decide. */
-export function createCommandRunner(): CommandRunner {
+ *  without throwing — callers inspect exitCode to decide.
+ *  Pass `{ env: scrubbedEnv() }` for the untrusted target-repo runner so
+ *  secrets never enter the spawned command's environment. */
+export function createCommandRunner(
+  opts: CommandRunnerOptions = {},
+): CommandRunner {
   return {
     async run(command, args, { cwd }) {
       try {
@@ -324,6 +374,7 @@ export function createCommandRunner(): CommandRunner {
           cwd,
           maxBuffer: 10 * 1024 * 1024,
           timeout: 10 * 60_000,
+          ...(opts.env ? { env: opts.env } : {}),
         });
         return { stdout, stderr, exitCode: 0 };
       } catch (err) {
