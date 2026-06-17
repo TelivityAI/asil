@@ -104,7 +104,9 @@ export async function runLoop(
     }
   }
 
-  const queue = deps.queue ?? new TaskQueue(config.queuePath);
+  const queue =
+    deps.queue ??
+    new TaskQueue(config.queuePath, { maxAttempts: config.maxAttempts });
   const cycleDetector = deps.cycleDetector ?? new CycleDetector();
   const outcomes: TaskOutcome[] = [];
   let cyclesDetected = 0;
@@ -224,10 +226,27 @@ export async function runLoop(
         { cwd: workDir },
       );
       if (installResult.exitCode !== 0) {
+        // Install failure is fatal: with no node_modules, every
+        // downstream typecheck/test runs in a known-bad environment and
+        // would reject good patches for reasons unrelated to the LLM's
+        // work. Abort the task with a distinct infra-failed outcome
+        // rather than patching blind. (A broken *build* is treated
+        // separately below — that can be the very thing being fixed.)
+        const stderr = installResult.stderr.slice(0, 500);
         console.error(
-          `\n[loop] ✖ pnpm install failed in worktree for task ${task.id}`,
+          `\n[loop] ✖ pnpm install failed in worktree for task ${task.id} — aborting task (infra failure)`,
         );
-        console.error(`       stderr: ${installResult.stderr.slice(0, 500)}`);
+        console.error(`       stderr: ${stderr}`);
+        checkpoint.kill('pnpm install failed');
+        queue.complete(task.id, 'failed', `pnpm install failed: ${stderr}`);
+        outcomes.push({
+          taskId: task.id,
+          status: 'infra-failed',
+          totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+          completedAt: new Date(),
+          failureReason: `pnpm install failed in worktree: ${stderr}`,
+        });
+        continue;
       }
 
       // 3c. Build workspace packages so their dist/ entries are resolvable.

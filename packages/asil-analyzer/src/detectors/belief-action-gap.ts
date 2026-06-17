@@ -107,9 +107,16 @@ export function detectBeliefActionGap(perTask: PerTask[]): BeliefActionHit[] {
             excerpt: c.responseContent.slice(0, 600),
           });
         }
-        // Rule (a): bucket by exact confidence value.
+        // Rule (a): bucket by exact confidence value — scoped to the
+        // task. A 0.8-accept on task A and a 0.8-reject on task B are
+        // about different diffs; bucketing them together would mint a
+        // false "same-conf-opposite-valence" hit. Scope by taskId so
+        // the rule only fires when ONE task shows the contradiction.
+        // (Refs Codex review #8.)
         const key =
-          conf.kind === 'numeric' ? `num:${conf.value.toString()}` : `word:${conf.value}`;
+          (conf.kind === 'numeric'
+            ? `num:${conf.value.toString()}`
+            : `word:${conf.value}`) + `@${t.taskId}`;
         (byBucket[key] ??= []).push({
           taskId: t.taskId,
           callIdx: i,

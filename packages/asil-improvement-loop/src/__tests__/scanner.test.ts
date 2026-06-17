@@ -7,10 +7,56 @@ import {
   scanTodos,
   scanCoverageGaps,
   scanDeadCode,
+  stableTaskId,
+  toRepoRelative,
 } from '../scanner.js';
 import { mockFileReader, mockRunner } from './helpers.js';
 
 describe('scanner', () => {
+  describe('stableTaskId (Codex #4 — deterministic identity)', () => {
+    it('is deterministic for the same category + file paths across calls', () => {
+      const a = stableTaskId('type-error', ['src/foo.ts']);
+      const b = stableTaskId('type-error', ['src/foo.ts']);
+      expect(a).toBe(b);
+      expect(a.startsWith('type-error-')).toBe(true);
+    });
+
+    it('is order-insensitive on file paths', () => {
+      expect(stableTaskId('test-failure', ['a.ts', 'b.ts'])).toBe(
+        stableTaskId('test-failure', ['b.ts', 'a.ts']),
+      );
+    });
+
+    it('normalizes ./ before hashing so ./foo and foo collide', () => {
+      expect(stableTaskId('dead-code', ['./src/x.ts'])).toBe(
+        stableTaskId('dead-code', ['src/x.ts']),
+      );
+    });
+
+    it('differs by category and by file set', () => {
+      expect(stableTaskId('type-error', ['src/foo.ts'])).not.toBe(
+        stableTaskId('test-failure', ['src/foo.ts']),
+      );
+      expect(stableTaskId('type-error', ['src/foo.ts'])).not.toBe(
+        stableTaskId('type-error', ['src/bar.ts']),
+      );
+    });
+  });
+
+  describe('toRepoRelative (Codex #3)', () => {
+    it('strips a repoRoot prefix to yield a repo-relative path', () => {
+      expect(toRepoRelative('/repo', '/repo/src/foo.ts')).toBe('src/foo.ts');
+      expect(toRepoRelative('/repo/', '/repo/src/foo.ts')).toBe('src/foo.ts');
+    });
+    it('leaves already-relative paths alone (and strips ./)', () => {
+      expect(toRepoRelative('/repo', 'src/foo.ts')).toBe('src/foo.ts');
+      expect(toRepoRelative('/repo', './src/foo.ts')).toBe('src/foo.ts');
+    });
+    it('leaves paths outside repoRoot unchanged', () => {
+      expect(toRepoRelative('/repo', '/other/x.ts')).toBe('/other/x.ts');
+    });
+  });
+
   describe('scanTestFailures', () => {
     it('returns [] when tests pass (exit 0)', async () => {
       const runner = mockRunner([
@@ -137,7 +183,10 @@ describe('scanner', () => {
       expect(tasks).toEqual([]);
     });
 
-    it('flags files with branch coverage below 80%', async () => {
+    it('flags files with branch coverage below 80% and normalizes absolute keys to repo-relative', async () => {
+      // Coverage reporters emit ABSOLUTE file keys. They must be
+      // converted to repo-relative or the executor rejects the
+      // <<<FILE: …>>> path as suspicious (Codex review #3).
       const summary = JSON.stringify({
         total: { branches: { pct: 90 } },
         '/repo/src/foo.ts': { branches: { pct: 45 } },
@@ -148,7 +197,7 @@ describe('scanner', () => {
         fs: mockFileReader({ '/repo/coverage/coverage-summary.json': summary }),
       });
       expect(tasks.length).toBe(1);
-      expect(tasks[0]?.filePaths[0]).toBe('/repo/src/foo.ts');
+      expect(tasks[0]?.filePaths[0]).toBe('src/foo.ts');
       expect(tasks[0]?.severity).toBe('high');
     });
   });

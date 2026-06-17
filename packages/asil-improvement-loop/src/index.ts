@@ -21,6 +21,8 @@ export {
   scanCoverageGaps,
   scanDeadCode,
   normalizePath,
+  stableTaskId,
+  toRepoRelative,
   type ScanResult,
   type ScannerDeps,
   type CommandRunner,

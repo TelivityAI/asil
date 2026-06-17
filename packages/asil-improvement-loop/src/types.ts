@@ -135,6 +135,7 @@ export type TaskOutcomeStatus =
   | 'rejected-self-review'
   | 'rejected-adversarial'
   | 'execution-failed'
+  | 'infra-failed'
   | 'budget-exceeded'
   | 'cycle-skipped';
 

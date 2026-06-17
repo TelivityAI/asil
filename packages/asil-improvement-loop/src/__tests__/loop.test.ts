@@ -122,6 +122,44 @@ describe('runLoop — integration', () => {
     expect(git.cleanedUp[0]).toMatch(/asil-auto-/);
   });
 
+  it('pnpm install failure in the worktree → task aborts as infra-failed, LLM never called, worktree cleaned (Codex #6)', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-install-fail' }));
+
+    // install fails; the LLM would only run AFTER a successful bootstrap.
+    const llm = goodLLM();
+
+    const runner = mockRunner([
+      { match: (cmd, args) => cmd === 'pnpm' && args.includes('install'), exitCode: 1, stderr: 'ERR_PNPM_LOCKFILE' },
+      { match: (cmd) => cmd === 'diff', exitCode: 1, stdout: CANNED_UNIFIED_DIFF },
+      { match: (cmd) => cmd === 'pnpm', exitCode: 0 },
+      { match: (cmd) => cmd === 'grep', exitCode: 0 },
+    ]);
+
+    const git = mockGit();
+    const result = await runLoop(cfg(), {
+      llm,
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git,
+      tracker,
+      budgetManager,
+      runner,
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(result.outcomes[0]?.status).toBe('infra-failed');
+    expect(result.outcomes[0]?.failureReason).toMatch(/install failed/i);
+    expect(result.prsOpened).toBe(0);
+    // The executor LLM must NOT have run — we aborted before execution.
+    expect(llm.calls.length).toBe(0);
+    // Worktree still cleaned up on the abort path.
+    expect(git.cleanedUp.length).toBe(1);
+  });
+
   it('self-review reject → task marked FAILED (not completed) + worktree cleaned', async () => {
     const queue = new TaskQueue(queuePath);
     queue.enqueue(mkTask({ id: 't-reject' }));
