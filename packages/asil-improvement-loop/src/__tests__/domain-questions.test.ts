@@ -11,24 +11,37 @@ import {
 import { mockRunner } from './helpers.js';
 
 describe('hashQuestion', () => {
-  it('is deterministic for the same input', () => {
-    expect(hashQuestion('How does X work?')).toBe(hashQuestion('How does X work?'));
+  it('is deterministic for the same file + input', () => {
+    expect(hashQuestion('a.ts', 'How does X work?')).toBe(
+      hashQuestion('a.ts', 'How does X work?'),
+    );
   });
 
   it('normalizes whitespace and case (re-formatting does not invalidate the answer)', () => {
-    expect(hashQuestion('How does X work?')).toBe(
-      hashQuestion('  HOW DOES   X work?  '),
+    expect(hashQuestion('a.ts', 'How does X work?')).toBe(
+      hashQuestion('a.ts', '  HOW DOES   X work?  '),
     );
   });
 
   it('returns a different hash when the question is reworded', () => {
-    expect(hashQuestion('How does X work?')).not.toBe(
-      hashQuestion('How does Y work?'),
+    expect(hashQuestion('a.ts', 'How does X work?')).not.toBe(
+      hashQuestion('a.ts', 'How does Y work?'),
     );
   });
 
+  it('returns a DIFFERENT hash for the same question in a different file (Codex #7)', () => {
+    // The whole point: identical wording in two files must not collide.
+    expect(hashQuestion('a.ts', 'How does X work?')).not.toBe(
+      hashQuestion('b.ts', 'How does X work?'),
+    );
+  });
+
+  it('normalizes the file path (./a.ts and a.ts collide)', () => {
+    expect(hashQuestion('./a.ts', 'q')).toBe(hashQuestion('a.ts', 'q'));
+  });
+
   it('returns a 64-char hex sha256', () => {
-    expect(hashQuestion('test')).toMatch(/^[a-f0-9]{64}$/);
+    expect(hashQuestion('f.ts', 'test')).toMatch(/^[a-f0-9]{64}$/);
   });
 });
 

@@ -97,7 +97,7 @@ describe('triageDomainQuestions', () => {
     // Compute what the hash will be by issuing the same call.
     const { hashQuestion } = await import('asil-improvement-loop');
     store.saveAnswer({
-      hash: hashQuestion('How to do X?'),
+      hash: hashQuestion('a.ts', 'How to do X?'),
       filePath: 'a.ts',
       line: 1,
       question: 'How to do X?',

@@ -130,8 +130,10 @@ export class EventSink {
 
   constructor(private readonly eventsFile: string) {
     mkdirSync(dirname(eventsFile), { recursive: true });
-    // Truncate any prior content so re-runs start clean.
-    writeFileSync(eventsFile, '');
+    // Truncate any prior content so re-runs start clean, and restrict
+    // to owner read/write — transcripts can carry pulled-in source even
+    // after redaction. (Codex review #9.)
+    writeFileSync(eventsFile, '', { mode: 0o600 });
   }
 
   setCurrentTask(taskId: string | null): void {
