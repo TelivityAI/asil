@@ -1,10 +1,18 @@
 {
   "name": "asil-thought-multiplier",
   "version": "0.0.1",
-  "private": true,
+  "description": "Strategic-thinking layer for autonomous agents: router, specialized thinkers, synthesizer, papa agent. Part of ASIL.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telivity-otaip/asil.git",
+    "directory": "packages/asil-thought-multiplier"
+  },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run",

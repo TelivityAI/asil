@@ -1,11 +1,18 @@
 {
   "name": "asil-analyzer",
   "version": "0.0.1",
-  "private": true,
+  "description": "Deterministic reasoning-quality analyzer for ASIL transcripts: captures LLM/Codex calls, splits per-task, scans for five failure modes (sycophancy, first-item bias, belief-action gap, drift, multi-hop decay). Zero LLM calls in analysis.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "description": "Deterministic reasoning-quality analyzer for ASIL transcripts: captures LLM/Codex calls, splits per-task, scans for five failure modes (sycophancy, first-item bias, belief-action gap, drift, multi-hop decay). Zero LLM calls in analysis.",
+  "files": ["dist", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telivity-otaip/asil.git",
+    "directory": "packages/asil-analyzer"
+  },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run",

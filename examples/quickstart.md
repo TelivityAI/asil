@@ -19,11 +19,13 @@ packages:
   - "asil/packages/*"   # add this line
 ```
 
-`pnpm install` will link them in. Or, once published, install from npm:
+`pnpm install` will link them in. Or, once published, install the library packages from npm:
 
 ```bash
-pnpm add asil-cost-controller asil-thought-multiplier asil-improvement-loop asil-runners
+pnpm add asil-cost-controller asil-thought-multiplier asil-improvement-loop asil-analyzer
 ```
+
+(`asil-runners` is the reference CLI/app, not a published library — vendor it or copy its wiring. The four libraries above are what you compose into your own runner.)
 
 ## 2. Set up environment
 

@@ -1,10 +1,18 @@
 {
   "name": "asil-improvement-loop",
   "version": "0.0.1",
-  "private": true,
+  "description": "Autonomous code-improvement pipeline: scan, isolate, execute, self-review, adversarial gate, domain guard, PR. Part of ASIL.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telivity-otaip/asil.git",
+    "directory": "packages/asil-improvement-loop"
+  },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run",
