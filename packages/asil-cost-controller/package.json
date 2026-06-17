@@ -1,10 +1,18 @@
 {
   "name": "asil-cost-controller",
   "version": "0.0.1",
-  "private": true,
+  "description": "Token-budget governor for autonomous LLM agents: per-task budgets, checkpoints, kill switch, daily caps. Part of ASIL.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telivity-otaip/asil.git",
+    "directory": "packages/asil-cost-controller"
+  },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run",
