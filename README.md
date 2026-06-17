@@ -1,5 +1,7 @@
 # ASIL — Autonomous Software Improvement Loop
 
+[![CI](https://github.com/telivity-otaip/asil/actions/workflows/ci.yml/badge.svg)](https://github.com/telivity-otaip/asil/actions/workflows/ci.yml)
+
 > Scan a codebase. Find issues. Generate fixes. Review them three times. Stop when domain expertise is required. Open a PR only when every gate passes.
 
 ASIL is the open-source extract of a production autonomous coding pipeline. It is the first publicly-available system that pairs autonomous code generation with **multi-gate review, cost control, and a domain-expertise boundary** — so the loop knows when to keep working and when to stop and ask a human.

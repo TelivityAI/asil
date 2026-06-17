@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build · typecheck · test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from package.json "packageManager" — do NOT also
+      # set `version:` here, or action-setup errors on the conflict.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # build before typecheck/test: cross-package imports resolve from
+      # each package's built dist/ (tsup output).
+      - name: Build
+        run: pnpm -r build
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Test
+        run: pnpm -r test
