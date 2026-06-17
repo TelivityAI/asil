@@ -53,7 +53,7 @@ describe('detectBeliefActionGap', () => {
     expect(hits.filter((h) => h.rule === 'low-conf-definitive').length).toBe(0);
   });
 
-  it('rule (a): flags same numeric confidence yielding opposite valences across calls', () => {
+  it('rule (a): flags same numeric confidence yielding opposite valences WITHIN one task', () => {
     const accept = mkCall({
       roleGuess: 'reviewer-code',
       responseContent: 'My confidence: 0.7. Approve.',
@@ -64,6 +64,25 @@ describe('detectBeliefActionGap', () => {
     });
     const hits = detectBeliefActionGap([mkTask('t1', [accept, reject])]);
     expect(hits.filter((h) => h.rule === 'same-conf-opposite-valence').length).toBeGreaterThan(0);
+  });
+
+  it('rule (a): does NOT flag same confidence + opposite valences across DIFFERENT tasks (Codex #8)', () => {
+    // A 0.7-accept on task A and a 0.7-reject on task B are verdicts
+    // about different diffs — not a contradiction. Buckets are scoped
+    // by taskId, so this must not produce a same-conf-opposite-valence hit.
+    const acceptA = mkCall({
+      roleGuess: 'reviewer-code',
+      responseContent: 'My confidence: 0.7. Approve.',
+    });
+    const rejectB = mkCall({
+      roleGuess: 'reviewer-code',
+      responseContent: 'My confidence: 0.7. Reject.',
+    });
+    const hits = detectBeliefActionGap([
+      mkTask('task-A', [acceptA]),
+      mkTask('task-B', [rejectB]),
+    ]);
+    expect(hits.filter((h) => h.rule === 'same-conf-opposite-valence').length).toBe(0);
   });
 
   it('does not flag when confidence is high and valence is definitive', () => {

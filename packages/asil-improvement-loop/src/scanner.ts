@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { LanguageProfile } from './language-profile.js';
 import { typescriptProfile } from './profiles/typescript.js';
 import type { ImprovementTask, Severity, TaskCategory } from './types.js';
@@ -215,13 +215,16 @@ export async function scanCoverageGaps(
   const tasks: ImprovementTask[] = [];
   for (const entry of entries) {
     if (entry.branchPct >= 80) continue;
+    // Coverage reporters emit absolute file keys; normalize to
+    // repo-relative so the executor doesn't reject the path. (#3)
+    const filePath = toRepoRelative(repoRoot, entry.filePath);
     tasks.push(
       makeTask({
         category: 'coverage-gap',
         severity: entry.branchPct < 50 ? 'high' : 'medium',
-        title: `Raise branch coverage in ${shortPath(entry.filePath)} (${entry.branchPct}%)`,
+        title: `Raise branch coverage in ${shortPath(filePath)} (${entry.branchPct}%)`,
         description: `Branch coverage is ${entry.branchPct}% — add tests until >=80%.`,
-        filePaths: [entry.filePath],
+        filePaths: [filePath],
         estimatedTokens: 50_000,
       }),
     );
@@ -310,14 +313,46 @@ function makeTask(partial: {
   estimatedTokens: number;
 }): ImprovementTask {
   return {
-    id: `${partial.category}-${randomUUID()}`,
+    id: stableTaskId(partial.category, partial.filePaths),
     discoveredAt: new Date(),
     ...partial,
   };
 }
 
+/**
+ * Deterministic task identity: `<category>-<hash(category + sorted file
+ * paths)>`. Stable across rescans so the queue's id-dedupe (which only
+ * compares `task.id`) actually suppresses re-enqueueing the same issue
+ * on every run. Identity is intentionally coarse — "this category of
+ * problem in these files" — so a fluctuating error count in the task
+ * *description* doesn't mint a new id each scan. The cycle detector,
+ * not the id, handles same-file churn. (Refs Codex review #4.)
+ */
+export function stableTaskId(
+  category: TaskCategory,
+  filePaths: readonly string[],
+): string {
+  const key = [category, ...[...filePaths].map(normalizePath).sort()].join(' ');
+  const hash = createHash('sha1').update(key).digest('hex').slice(0, 12);
+  return `${category}-${hash}`;
+}
+
 function shortPath(p: string): string {
   return p.replace(/^.*\//, '');
+}
+
+/**
+ * Convert an absolute path under `repoRoot` to a repo-relative path.
+ * Coverage tools (vitest's istanbul reporter, coverage.py) emit
+ * absolute file keys; left as-is they reach the executor as absolute
+ * `<<<FILE: …>>>` paths, which buildPatchFromFiles rejects as
+ * suspicious. Paths already relative (or outside repoRoot) are returned
+ * unchanged. (Refs Codex review #3.)
+ */
+export function toRepoRelative(repoRoot: string, p: string): string {
+  const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
+  if (p.startsWith(root)) return p.slice(root.length);
+  return normalizePath(p);
 }
 
 /**
