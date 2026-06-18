@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type {
+  DequeueMode,
   ImprovementTask,
   QueueItem,
   QueueStatus,
@@ -8,6 +9,11 @@ import type {
   TaskCategory,
 } from './types.js';
 import { CATEGORY_PRIORITY, SEVERITY_RANK } from './types.js';
+
+/** Categories ordered by priority (most important first). */
+const CATEGORIES_BY_PRIORITY = (
+  Object.keys(CATEGORY_PRIORITY) as TaskCategory[]
+).sort((a, b) => CATEGORY_PRIORITY[a] - CATEGORY_PRIORITY[b]);
 
 /** True when `severity` is at least as severe as `floor`. */
 export function meetsSeverityFloor(
@@ -36,6 +42,12 @@ export interface TaskQueueOptions {
    * dequeue. Default: `low` (accept everything).
    */
   minSeverity?: Severity;
+  /**
+   * Task selection strategy. `priority` (default) serves strict priority
+   * order; `round-robin` rotates through categories with eligible work so one
+   * busy category can't starve the rest.
+   */
+  dequeueMode?: DequeueMode;
 }
 
 export class TaskQueue {
@@ -43,11 +55,15 @@ export class TaskQueue {
   private readonly persistPath: string;
   private readonly maxAttempts: number;
   private readonly minSeverity: Severity;
+  private readonly dequeueMode: DequeueMode;
+  /** Last category served, for round-robin rotation (in-memory only). */
+  private lastCategory: TaskCategory | null = null;
 
   constructor(persistPath: string, options: TaskQueueOptions = {}) {
     this.persistPath = persistPath;
     this.maxAttempts = options.maxAttempts ?? 2;
     this.minSeverity = options.minSeverity ?? 'low';
+    this.dequeueMode = options.dequeueMode ?? 'priority';
     this.load();
   }
 
@@ -67,14 +83,46 @@ export class TaskQueue {
     this.persist();
   }
 
-  dequeue(): QueueItem | null {
-    const next = this.items.find(
-      (i) =>
-        i.status === 'queued' &&
-        i.attempts < i.maxAttempts &&
-        meetsSeverityFloor(i.task.severity, this.minSeverity),
+  /** Whether an item can be served right now. */
+  private isEligible(i: QueueItem): boolean {
+    return (
+      i.status === 'queued' &&
+      i.attempts < i.maxAttempts &&
+      meetsSeverityFloor(i.task.severity, this.minSeverity)
     );
+  }
+
+  /**
+   * Round-robin pick: walk the category ring (in priority order) starting
+   * just after the last-served category, and return the first eligible task
+   * found. This keeps rotation fair even when a category empties mid-cycle —
+   * we always advance forward rather than restarting at the top. Within the
+   * chosen category, `items` is kept priority-sorted so the first match is
+   * the highest-priority one.
+   */
+  private pickRoundRobin(): QueueItem | undefined {
+    const ring = CATEGORIES_BY_PRIORITY;
+    const startIdx =
+      this.lastCategory === null
+        ? 0
+        : (ring.indexOf(this.lastCategory) + 1) % ring.length;
+    for (let k = 0; k < ring.length; k += 1) {
+      const cat = ring[(startIdx + k) % ring.length]!;
+      const item = this.items.find(
+        (i) => i.task.category === cat && this.isEligible(i),
+      );
+      if (item) return item;
+    }
+    return undefined;
+  }
+
+  dequeue(): QueueItem | null {
+    const next =
+      this.dequeueMode === 'round-robin'
+        ? this.pickRoundRobin()
+        : this.items.find((i) => this.isEligible(i));
     if (!next) return null;
+    this.lastCategory = next.task.category;
 
     next.status = 'running';
     next.attempts += 1;

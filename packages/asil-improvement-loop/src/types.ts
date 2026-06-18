@@ -41,6 +41,17 @@ export const CATEGORY_SKILL_MAP: Record<TaskCategory, string> = {
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
 /**
+ * How the queue chooses the next task to run.
+ *
+ * - `priority`: strict priority order (category priority + severity). One
+ *   busy category can monopolize a run.
+ * - `round-robin`: rotate through the categories that have eligible work, in
+ *   priority order, so no single category starves the others. Within a
+ *   category, the highest-priority task is still served first.
+ */
+export type DequeueMode = 'priority' | 'round-robin';
+
+/**
  * Ordinal rank for severities — lower is more severe. Used to compare a
  * task's severity against a configured floor (`minSeverity`): a task passes
  * the floor when its rank is `<=` the floor's rank.
@@ -189,6 +200,12 @@ export interface ImprovementLoopConfig {
    * everything) when omitted, preserving prior behavior.
    */
   minSeverity?: Severity;
+  /**
+   * Task selection strategy. Defaults to `priority` when omitted, preserving
+   * prior behavior. Use `round-robin` to keep one noisy category from
+   * starving the others within a run.
+   */
+  dequeueMode?: DequeueMode;
   codexConfig: {
     apiKey: string;
     model: string;

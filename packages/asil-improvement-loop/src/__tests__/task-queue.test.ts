@@ -154,6 +154,59 @@ describe('TaskQueue', () => {
     });
   });
 
+  describe('round-robin dequeue (Codex #4)', () => {
+    it('rotates across categories instead of draining the top one first', () => {
+      const q = new TaskQueue(path, { dequeueMode: 'round-robin' });
+      // Three test-failures (top priority) + one type-error + one vulnerability.
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf1'));
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf2'));
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf3'));
+      q.enqueue(mkCategoryTask('type-error', 'medium', 'te1'));
+      q.enqueue(mkCategoryTask('vulnerability', 'medium', 'vu1'));
+
+      const cats = [
+        q.dequeue()?.task.category,
+        q.dequeue()?.task.category,
+        q.dequeue()?.task.category,
+      ];
+      // First full cycle visits each category-with-work exactly once.
+      expect(cats).toEqual(['test-failure', 'type-error', 'vulnerability']);
+    });
+
+    it('falls back to remaining categories once others are exhausted', () => {
+      const q = new TaskQueue(path, { dequeueMode: 'round-robin' });
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf1'));
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf2'));
+      q.enqueue(mkCategoryTask('type-error', 'medium', 'te1'));
+
+      const order = [
+        q.dequeue()?.task.id,
+        q.dequeue()?.task.id,
+        q.dequeue()?.task.id,
+      ];
+      // tf, te (rotation), then back to the leftover tf.
+      expect(order).toEqual(['tf1', 'te1', 'tf2']);
+      expect(q.dequeue()).toBeNull();
+    });
+
+    it('within a category, still serves the highest-severity task first', () => {
+      const q = new TaskQueue(path, { dequeueMode: 'round-robin' });
+      q.enqueue(mkCategoryTask('test-failure', 'low', 'tf-low'));
+      q.enqueue(mkCategoryTask('test-failure', 'critical', 'tf-crit'));
+      expect(q.dequeue()?.task.id).toBe('tf-crit');
+    });
+
+    it('priority mode (default) drains the top category first', () => {
+      const q = new TaskQueue(path); // default: priority
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf1'));
+      q.enqueue(mkCategoryTask('test-failure', 'medium', 'tf2'));
+      q.enqueue(mkCategoryTask('type-error', 'medium', 'te1'));
+      expect(q.dequeue()?.task.category).toBe('test-failure');
+      expect(q.dequeue()?.task.category).toBe('test-failure');
+      expect(q.dequeue()?.task.category).toBe('type-error');
+    });
+  });
+
   describe('meetsSeverityFloor', () => {
     it('passes when severity is at or above the floor', () => {
       expect(meetsSeverityFloor('critical', 'high')).toBe(true);
