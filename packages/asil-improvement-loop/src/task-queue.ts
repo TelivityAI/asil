@@ -4,9 +4,18 @@ import type {
   ImprovementTask,
   QueueItem,
   QueueStatus,
+  Severity,
   TaskCategory,
 } from './types.js';
-import { CATEGORY_PRIORITY } from './types.js';
+import { CATEGORY_PRIORITY, SEVERITY_RANK } from './types.js';
+
+/** True when `severity` is at least as severe as `floor`. */
+export function meetsSeverityFloor(
+  severity: Severity,
+  floor: Severity,
+): boolean {
+  return SEVERITY_RANK[severity] <= SEVERITY_RANK[floor];
+}
 
 interface SerializedQueueItem {
   task: Omit<ImprovementTask, 'discoveredAt'> & { discoveredAt: string };
@@ -21,20 +30,29 @@ interface SerializedQueueItem {
 export interface TaskQueueOptions {
   /** Default max attempts per task. Default: 2. */
   maxAttempts?: number;
+  /**
+   * Severity floor. Tasks less severe than this are never enqueued, and any
+   * below-floor task persisted under an older, lower floor is skipped at
+   * dequeue. Default: `low` (accept everything).
+   */
+  minSeverity?: Severity;
 }
 
 export class TaskQueue {
   private items: QueueItem[] = [];
   private readonly persistPath: string;
   private readonly maxAttempts: number;
+  private readonly minSeverity: Severity;
 
   constructor(persistPath: string, options: TaskQueueOptions = {}) {
     this.persistPath = persistPath;
     this.maxAttempts = options.maxAttempts ?? 2;
+    this.minSeverity = options.minSeverity ?? 'low';
     this.load();
   }
 
   enqueue(task: ImprovementTask): void {
+    if (!meetsSeverityFloor(task.severity, this.minSeverity)) return;
     if (this.items.some((i) => i.task.id === task.id)) return;
 
     this.items.push({
@@ -51,7 +69,10 @@ export class TaskQueue {
 
   dequeue(): QueueItem | null {
     const next = this.items.find(
-      (i) => i.status === 'queued' && i.attempts < i.maxAttempts,
+      (i) =>
+        i.status === 'queued' &&
+        i.attempts < i.maxAttempts &&
+        meetsSeverityFloor(i.task.severity, this.minSeverity),
     );
     if (!next) return null;
 
