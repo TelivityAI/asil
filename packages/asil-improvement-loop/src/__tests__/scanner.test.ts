@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizePath,
   isTestFile,
+  isEntryPointFile,
   scanCodebase,
   scanTestFailures,
   scanTypeErrors,
@@ -325,6 +326,60 @@ describe('scanner', () => {
         expect(args).toContain('--include=*.ts');
         expect(args).toContain('--include=*.tsx');
       }
+    });
+
+    it('does NOT flag exports in a public entry point (index.ts) even with no in-repo uses (Codex #10)', async () => {
+      const exportsOut = './packages/foo/src/index.ts:1:export const publicApi = 1';
+      const runner = mockRunner([
+        {
+          match: (_, args) => args.some((a) => a.includes('^export')),
+          stdout: exportsOut,
+        },
+        {
+          match: (_, args) => args.some((a) => a.includes('publicApi')),
+          // Only the entry point itself references it — out-of-repo consumers
+          // are invisible to grep, so this must NOT be reported as dead.
+          stdout: './packages/foo/src/index.ts',
+        },
+      ]);
+      const tasks = await scanDeadCode('/repo', {
+        runner,
+        fs: mockFileReader(),
+      });
+      expect(tasks).toEqual([]);
+    });
+
+    it('still flags an unused export in a non-entry file, with a heuristic caveat', async () => {
+      const exportsOut = './pkg/foo.ts:1:export const lonely = 1';
+      const runner = mockRunner([
+        {
+          match: (_, args) => args.some((a) => a.includes('^export')),
+          stdout: exportsOut,
+        },
+        {
+          match: (_, args) => args.some((a) => a.includes('lonely')),
+          stdout: './pkg/foo.ts',
+        },
+      ]);
+      const tasks = await scanDeadCode('/repo', {
+        runner,
+        fs: mockFileReader(),
+      });
+      expect(tasks.length).toBe(1);
+      expect(tasks[0]?.description).toContain('lonely');
+      expect(tasks[0]?.description.toLowerCase()).toContain('heuristic');
+    });
+  });
+
+  describe('isEntryPointFile', () => {
+    it('treats index.* barrels and __init__.py as entry points, not plain source', () => {
+      expect(isEntryPointFile('packages/foo/src/index.ts')).toBe(true);
+      expect(isEntryPointFile('index.tsx')).toBe(true);
+      expect(isEntryPointFile('src/index.mjs')).toBe(true);
+      expect(isEntryPointFile('pkg/__init__.py')).toBe(true);
+      expect(isEntryPointFile('src/foo.ts')).toBe(false);
+      expect(isEntryPointFile('src/indexer.ts')).toBe(false);
+      expect(isEntryPointFile('src/my_init.py')).toBe(false);
     });
   });
 

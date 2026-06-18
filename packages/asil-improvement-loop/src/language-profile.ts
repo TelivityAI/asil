@@ -59,6 +59,14 @@ export interface DeadCodeProfile {
   /** File extensions to scan (e.g. ['ts', 'tsx'] or ['py', 'pyi']).
    *  Excludes the leading dot. */
   fileExtensions: string[];
+  /**
+   * Optional: is this file a public entry point (barrel / package root)?
+   * Symbols declared in an entry point are the package's API surface — their
+   * real consumers may live outside the repo, where grep can't see them, so
+   * the dead-code scanner must never flag them. When omitted, the scanner
+   * applies a convention default (`index.*` / `__init__.py`).
+   */
+  isEntryPoint?(path: string): boolean;
 }
 
 export interface LanguageProfile {
