@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   normalizePath,
+  isTestFile,
   scanCodebase,
   scanTestFailures,
   scanTypeErrors,
@@ -171,6 +172,49 @@ describe('scanner', () => {
       expect(bar?.severity).toBe('high');
       const foo = tasks.find((t) => t.filePaths[0]?.includes('foo.ts'));
       expect(foo?.severity).toBe('medium');
+    });
+
+    it('skips markers found in test files — they are fixtures, not tasks (precision fix)', async () => {
+      const grepOut = [
+        './packages/foo/src/__tests__/foo.test.ts:1:// DOMAIN_QUESTION: fixture data',
+        './packages/foo/src/scanner.spec.ts:2:// TODO: spec fixture',
+        './packages/foo/src/real.ts:9:// TODO: a genuine task',
+      ].join('\n');
+      const runner = mockRunner([{ match: () => true, stdout: grepOut }]);
+      const tasks = await scanTodos('/repo', { runner, fs: mockFileReader() });
+      // Only the non-test file yields a task.
+      expect(tasks.length).toBe(1);
+      expect(tasks[0]?.filePaths[0]).toBe('packages/foo/src/real.ts');
+    });
+
+    it('greps with a comment-anchored marker pattern (no bare string-literal matches)', async () => {
+      const seen: string[][] = [];
+      const runner = mockRunner([
+        {
+          match: (cmd, args) => {
+            if (cmd === 'grep') seen.push(args);
+            return cmd === 'grep';
+          },
+          stdout: '',
+        },
+      ]);
+      await scanTodos('/repo', { runner, fs: mockFileReader() });
+      const pattern = seen[0]?.find((a) => a.includes('DOMAIN_QUESTION')) ?? '';
+      // The pattern must require a line-start comment opener before the
+      // marker, so `'DOMAIN_QUESTION'` / `/DOMAIN_QUESTION:/` don't match.
+      expect(pattern).toContain('(//|\\*|#)');
+      expect(pattern.startsWith('^')).toBe(true);
+    });
+  });
+
+  describe('isTestFile', () => {
+    it('matches __tests__ dirs and .test/.spec files; not plain source', () => {
+      expect(isTestFile('packages/x/src/__tests__/a.ts')).toBe(true);
+      expect(isTestFile('src/a.test.ts')).toBe(true);
+      expect(isTestFile('src/a.spec.tsx')).toBe(true);
+      expect(isTestFile('a.test.py')).toBe(false); // py uses test_ prefix, not .test.
+      expect(isTestFile('src/a.ts')).toBe(false);
+      expect(isTestFile('src/scanner.ts')).toBe(false);
     });
   });
 

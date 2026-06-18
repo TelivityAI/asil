@@ -21,6 +21,7 @@ export {
   scanCoverageGaps,
   scanDeadCode,
   normalizePath,
+  isTestFile,
   stableTaskId,
   toRepoRelative,
   type ScanResult,

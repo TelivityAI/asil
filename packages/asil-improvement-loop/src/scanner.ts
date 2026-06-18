@@ -157,7 +157,15 @@ export async function scanTodos(
       ...GREP_EXCLUDE_DIRS,
       ...includes,
       '-E',
-      '(TODO|FIXME|HACK|DOMAIN_QUESTION)[: ]',
+      // Require the marker to be the FIRST token of a line-start comment
+      // (`//`, `#`, or jsdoc `*`). This is ASIL's own DOMAIN_QUESTION
+      // convention and it eliminates the false positives a live grind
+      // surfaced: marker strings inside string literals / regexes
+      // (e.g. `'DOMAIN_QUESTION'`, `/DOMAIN_QUESTION:/`) and mid-comment
+      // mentions are no longer matched — only genuine actionable markers.
+      // Trade-off: trailing comments (`code; // TODO`) aren't matched,
+      // consistent with how DOMAIN_QUESTION markers are already detected.
+      '^[ \\t]*(//|\\*|#)[ \\t]*(TODO|FIXME|HACK|DOMAIN_QUESTION)[: ]',
       '.',
     ],
     { cwd: repoRoot },
@@ -173,6 +181,10 @@ export async function scanTodos(
     const [, file, ln, txt] = m;
     if (!file) continue;
     const key = normalizePath(file);
+    // Skip test files — a TODO/FIXME/DOMAIN_QUESTION marker in a test is
+    // almost always test DATA (fixtures exercising the scanner itself),
+    // not an actionable task. (Live-grind precision finding.)
+    if (isTestFile(key)) continue;
     const arr = byFile.get(key) ?? [];
     arr.push(`:${ln} — ${txt?.trim() ?? ''}`);
     byFile.set(key, arr);
@@ -339,6 +351,19 @@ export function stableTaskId(
 
 function shortPath(p: string): string {
   return p.replace(/^.*\//, '');
+}
+
+/**
+ * True for files that are tests: anything under a `__tests__/` directory
+ * or named `*.test.*` / `*.spec.*`. Used to keep TODO/FIXME markers that
+ * are test FIXTURES (data exercising the scanner) out of the task queue.
+ */
+export function isTestFile(p: string): boolean {
+  return (
+    p.includes('/__tests__/') ||
+    p.startsWith('__tests__/') ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(p)
+  );
 }
 
 /**
