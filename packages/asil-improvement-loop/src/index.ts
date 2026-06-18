@@ -27,6 +27,7 @@ export {
   scanDeadCode,
   normalizePath,
   isTestFile,
+  isEntryPointFile,
   stableTaskId,
   toRepoRelative,
   type ScanResult,

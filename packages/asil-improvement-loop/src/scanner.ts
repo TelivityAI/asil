@@ -289,8 +289,17 @@ export async function scanDeadCode(
     symbolByFile.set(file, set);
   }
 
+  const isEntryPoint = dc.isEntryPoint ?? isEntryPointFile;
+
   const tasks: ImprovementTask[] = [];
   for (const [file, symbols] of symbolByFile) {
+    // Entry-point / barrel files (index.*, __init__.py) are the package's
+    // public API. Their consumers can live outside the repo, where the
+    // usage grep is blind — so a missing in-repo reference does NOT mean
+    // the symbol is dead. Skip them to avoid flagging the whole API surface.
+    // (Codex review #10: dead-code analysis was too shallow to tell public
+    // API from genuinely unreachable code.)
+    if (isEntryPoint(file)) continue;
     const unused: string[] = [];
     for (const sym of symbols) {
       const grep = dc.usageGrep(sym, GREP_EXCLUDE_DIRS);
@@ -307,7 +316,11 @@ export async function scanDeadCode(
         category: 'dead-code',
         severity: 'low',
         title: `Remove ${unused.length} unused export(s) in ${shortPath(file)}`,
-        description: `Unused: ${unused.join(', ')}`,
+        description:
+          `Unused: ${unused.join(', ')}\n\n` +
+          'Heuristic: these exports have no in-repo references (grep-based ' +
+          'reachability, not type-aware). Confirm they are not reflectively ' +
+          'used or part of an external/public API before removing.',
         filePaths: [file],
         estimatedTokens: 30_000,
       }),
@@ -364,6 +377,18 @@ export function isTestFile(p: string): boolean {
     p.startsWith('__tests__/') ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(p)
   );
+}
+
+/**
+ * Convention default for "is this file a public entry point?" — used by the
+ * dead-code scanner when a language profile doesn't supply its own
+ * `isEntryPoint`. Matches JS/TS barrels (`index.ts`, `index.tsx`,
+ * `index.mjs`, …) and Python package roots (`__init__.py`). Symbols declared
+ * in these files are treated as public API and never flagged as dead.
+ */
+export function isEntryPointFile(p: string): boolean {
+  const base = shortPath(p);
+  return /^index\.[cm]?[jt]sx?$/.test(base) || base === '__init__.py';
 }
 
 /**

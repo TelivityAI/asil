@@ -111,7 +111,8 @@ export const typescriptProfile: LanguageProfile = {
   },
 
   deadCode: {
-    exportRegex: /^export\s+(?:const|function|class|interface|type)\s+([A-Za-z_][A-Za-z0-9_]*)/,
+    exportRegex:
+      /^export\s+(?:abstract\s+)?(?:async\s+)?(?:const|function|class|interface|type|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/,
     fileExtensions: ['ts', 'tsx'],
     usageGrep(symbol: string, excludeDirArgs: string[]) {
       return {
