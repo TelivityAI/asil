@@ -283,6 +283,10 @@ describe('wiring', () => {
         { role: 'system', content: 'sys' },
         { role: 'user', content: 'user' },
       ]);
+      // Default max_tokens must be high enough for whole-file rewrites —
+      // 4096 truncated large files mid-output and the patch was rejected.
+      // A live gpt-4o grind surfaced this. (Matches the Anthropic caller.)
+      expect(body.max_tokens).toBe(8192);
     });
 
     it('omits Authorization header when apiKey is unset (many local servers ignore auth)', async () => {
