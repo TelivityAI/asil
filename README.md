@@ -1,6 +1,6 @@
 # ASIL — Autonomous Software Improvement Loop
 
-[![CI](https://github.com/telivity-otaip/asil/actions/workflows/ci.yml/badge.svg)](https://github.com/telivity-otaip/asil/actions/workflows/ci.yml)
+[![CI](https://github.com/TelivityAI/asil/actions/workflows/ci.yml/badge.svg)](https://github.com/TelivityAI/asil/actions/workflows/ci.yml)
 
 > Scan a codebase. Find issues. Generate fixes. Review them three times. Stop when domain expertise is required. Open a PR only when every gate passes.
 
@@ -105,7 +105,7 @@ The scanner is profile-driven (`LanguageProfile` interface). TypeScript is the r
 
 ```bash
 # 1. Install
-git clone https://github.com/telivity-otaip/asil asil
+git clone https://github.com/TelivityAI/asil asil
 cd asil
 pnpm install
 pnpm build
