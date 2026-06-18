@@ -107,7 +107,10 @@ export async function runLoop(
 
   const queue =
     deps.queue ??
-    new TaskQueue(config.queuePath, { maxAttempts: config.maxAttempts });
+    new TaskQueue(config.queuePath, {
+      maxAttempts: config.maxAttempts,
+      ...(config.minSeverity ? { minSeverity: config.minSeverity } : {}),
+    });
   const cycleDetector = deps.cycleDetector ?? new CycleDetector();
   const outcomes: TaskOutcome[] = [];
   let cyclesDetected = 0;

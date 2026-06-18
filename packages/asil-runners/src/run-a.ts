@@ -27,6 +27,7 @@ import {
   type ImprovementLoopConfig,
   type LanguageProfile,
   type LoopDeps,
+  type Severity,
   type TaskCategory,
 } from 'asil-improvement-loop';
 import {
@@ -56,7 +57,11 @@ interface Flags {
   transcriptsDir: string | null;
   /** Language profile selector. Default: ts. */
   profile: 'ts' | 'python';
+  /** Severity floor — tasks below this are never enqueued or run. Default: low. */
+  minSeverity: Severity;
 }
+
+const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
 
 function resolveProfile(name: 'ts' | 'python'): LanguageProfile {
   return name === 'python' ? pythonProfile : typescriptProfile;
@@ -70,6 +75,7 @@ function parseFlags(argv: readonly string[]): Flags | null {
     skipQuestions: false,
     transcriptsDir: null,
     profile: 'ts',
+    minSeverity: 'low',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -97,6 +103,16 @@ function parseFlags(argv: readonly string[]): Flags | null {
       }
       flags.profile = v;
       i += 1;
+    } else if (a === '--min-severity' && argv[i + 1]) {
+      const v = argv[i + 1]!;
+      if (!SEVERITIES.includes(v as Severity)) {
+        console.error(
+          `Unknown --min-severity value: ${v} (expected one of: ${SEVERITIES.join(', ')})`,
+        );
+        return null;
+      }
+      flags.minSeverity = v as Severity;
+      i += 1;
     } else if (a === '--help' || a === '-h') {
       return null;
     }
@@ -119,6 +135,8 @@ Options:
   --profile NAME      Language profile for the scanner. One of: ts, python.
                       Defaults to ts. Python requires pytest-json-report
                       and mypy on PATH.
+  --min-severity SEV  Severity floor. Tasks below SEV are never enqueued or
+                      run. One of: critical, high, medium, low (default: low).
   --help, -h          Show this help`;
 
 export async function main(): Promise<void> {
@@ -163,6 +181,7 @@ export async function main(): Promise<void> {
   console.log(
     `   Skip: ${flags.skipCategories.length > 0 ? flags.skipCategories.join(', ') : 'none'}`,
   );
+  console.log(`   Min severity: ${flags.minSeverity}`);
   console.log(`   Dry run: ${flags.dryRun}\n`);
 
   const profile = resolveProfile(flags.profile);
@@ -277,6 +296,7 @@ export async function main(): Promise<void> {
       process.env.ASIL_QUEUE_PATH ??
       resolve(env.REPO_ROOT, '.asil', 'usage-data', 'queue.json'),
     skipCategories: flags.skipCategories,
+    minSeverity: flags.minSeverity,
     codexConfig: {
       apiKey: 'OPENAI_API_KEY',
       model: 'gpt-4o',

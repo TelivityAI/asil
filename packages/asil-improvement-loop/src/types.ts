@@ -40,6 +40,18 @@ export const CATEGORY_SKILL_MAP: Record<TaskCategory, string> = {
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
+/**
+ * Ordinal rank for severities — lower is more severe. Used to compare a
+ * task's severity against a configured floor (`minSeverity`): a task passes
+ * the floor when its rank is `<=` the floor's rank.
+ */
+export const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
 export interface ImprovementTask {
   id: string;
   category: TaskCategory;
@@ -171,6 +183,12 @@ export interface ImprovementLoopConfig {
   repoRoot: string;
   queuePath: string;
   skipCategories: TaskCategory[];
+  /**
+   * Severity floor. Tasks less severe than this are never enqueued or run —
+   * the loop spends its budget on what matters. Defaults to `low` (accept
+   * everything) when omitted, preserving prior behavior.
+   */
+  minSeverity?: Severity;
   codexConfig: {
     apiKey: string;
     model: string;

@@ -7,7 +7,12 @@
  * a PR if everything passes. Budget enforced via asil-cost-controller.
  */
 export * from './types.js';
-export { TaskQueue, priorityFor } from './task-queue.js';
+export {
+  TaskQueue,
+  priorityFor,
+  meetsSeverityFloor,
+  type TaskQueueOptions,
+} from './task-queue.js';
 export {
   CycleDetector,
   type CycleCheck,

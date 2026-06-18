@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskQueue, priorityFor } from '../task-queue.js';
+import { TaskQueue, priorityFor, meetsSeverityFloor } from '../task-queue.js';
 import { mkCategoryTask, mkTask } from './helpers.js';
 
 describe('TaskQueue', () => {
@@ -118,5 +118,49 @@ describe('TaskQueue', () => {
     fs.writeFileSync(path, '{not json', 'utf8');
     const q = new TaskQueue(path);
     expect(q.stats().total).toBe(0);
+  });
+
+  describe('minSeverity floor (Codex #3)', () => {
+    it('drops below-floor tasks at enqueue, keeps at-or-above-floor', () => {
+      const q = new TaskQueue(path, { minSeverity: 'high' });
+      q.enqueue(mkCategoryTask('type-error', 'critical', 'crit'));
+      q.enqueue(mkCategoryTask('type-error', 'high', 'high'));
+      q.enqueue(mkCategoryTask('type-error', 'medium', 'med'));
+      q.enqueue(mkCategoryTask('type-error', 'low', 'low'));
+      expect(q.stats().queued).toBe(2);
+      const ids = q.snapshot().map((i) => i.task.id).sort();
+      expect(ids).toEqual(['crit', 'high']);
+    });
+
+    it('default floor (low) accepts every severity — backwards compatible', () => {
+      const q = new TaskQueue(path);
+      for (const sev of ['critical', 'high', 'medium', 'low'] as const) {
+        q.enqueue(mkCategoryTask('type-error', sev, sev));
+      }
+      expect(q.stats().queued).toBe(4);
+    });
+
+    it('skips below-floor tasks persisted under an older lower floor', () => {
+      // Persist a medium task with the default (low) floor.
+      const lenient = new TaskQueue(path);
+      lenient.enqueue(mkCategoryTask('type-error', 'medium', 'med'));
+      lenient.enqueue(mkCategoryTask('type-error', 'critical', 'crit'));
+
+      // Reload with a stricter floor — the medium one must not be served.
+      const strict = new TaskQueue(path, { minSeverity: 'high' });
+      const first = strict.dequeue();
+      expect(first?.task.id).toBe('crit');
+      expect(strict.dequeue()).toBeNull();
+    });
+  });
+
+  describe('meetsSeverityFloor', () => {
+    it('passes when severity is at or above the floor', () => {
+      expect(meetsSeverityFloor('critical', 'high')).toBe(true);
+      expect(meetsSeverityFloor('high', 'high')).toBe(true);
+      expect(meetsSeverityFloor('medium', 'high')).toBe(false);
+      expect(meetsSeverityFloor('low', 'low')).toBe(true);
+      expect(meetsSeverityFloor('critical', 'low')).toBe(true);
+    });
   });
 });
