@@ -191,7 +191,10 @@ export interface OpenAICompatibleOptions {
   apiKey?: string;
   /** Path appended to baseUrl. Default `/chat/completions`. */
   endpoint?: string;
-  /** Max output tokens per call. Default 4096. */
+  /** Max output tokens per call. Default 8192 — matches the Anthropic
+   *  caller. The executor rewrites WHOLE files, so a low cap truncates
+   *  large-file rewrites mid-output (the closing `<<<END FILE>>>`
+   *  sentinel gets cut), and the patch is rejected. 4096 was too low. */
   maxTokens?: number;
   /** Injectable fetch for tests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
@@ -233,7 +236,7 @@ function postOpenAICompatible(
     headers,
     body: JSON.stringify({
       ...body,
-      max_tokens: opts.maxTokens ?? 4096,
+      max_tokens: opts.maxTokens ?? 8192,
     }),
   }).then(async (response) => {
     if (!response.ok) {
