@@ -54,8 +54,9 @@ describe('scanner', () => {
       expect(toRepoRelative('/repo', 'src/foo.ts')).toBe('src/foo.ts');
       expect(toRepoRelative('/repo', './src/foo.ts')).toBe('src/foo.ts');
     });
-    it('leaves paths outside repoRoot unchanged', () => {
-      expect(toRepoRelative('/repo', '/other/x.ts')).toBe('/other/x.ts');
+    it('drops paths outside repoRoot and parent traversals', () => {
+      expect(toRepoRelative('/repo', '/other/x.ts')).toBeNull();
+      expect(toRepoRelative('/repo', '../etc/passwd')).toBeNull();
     });
   });
 
@@ -236,6 +237,7 @@ describe('scanner', () => {
         total: { branches: { pct: 90 } },
         '/repo/src/foo.ts': { branches: { pct: 45 } },
         '/repo/src/bar.ts': { branches: { pct: 85 } },
+        '/other/outside.ts': { branches: { pct: 10 } },
       });
       const tasks = await scanCoverageGaps('/repo', {
         runner: mockRunner([]),

@@ -103,5 +103,6 @@ export type {
   TestFailure,
   TypeError as ScannerTypeError,
 } from './language-profile.js';
+export { isInsideRoot, resolveConfiguredPath } from './paths.js';
 export { typescriptProfile } from './profiles/typescript.js';
 export { pythonProfile } from './profiles/python.js';

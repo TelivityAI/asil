@@ -7,7 +7,7 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   EventSink,
   instrumentCodexCaller,
@@ -21,6 +21,7 @@ import {
   createDomainAnswerStore,
   findDomainQuestions,
   pythonProfile,
+  resolveConfiguredPath,
   runLoop,
   scanCodebase,
   typescriptProfile,
@@ -95,8 +96,7 @@ function parseFlags(argv: readonly string[]): Flags | null {
     } else if (a === '--skip-questions') {
       flags.skipQuestions = true;
     } else if (a === '--transcripts' && argv[i + 1]) {
-      const raw = argv[i + 1]!;
-      flags.transcriptsDir = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+      flags.transcriptsDir = argv[i + 1]!;
       i += 1;
     } else if (a === '--profile' && argv[i + 1]) {
       const v = argv[i + 1]!;
@@ -155,6 +155,9 @@ export async function main(): Promise<void> {
   }
 
   const env = loadEnv();
+  if (flags.transcriptsDir) {
+    flags.transcriptsDir = resolveConfiguredPath(env.REPO_ROOT, flags.transcriptsDir);
+  }
 
   // pnpm --filter changes cwd to the package dir (autonomous/runners/).
   // Resolve the actual git repo root so scanner paths, config paths, and
@@ -298,12 +301,15 @@ export async function main(): Promise<void> {
     maxTasksPerRun: flags.maxTasks,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    markdownSkillsPath:
-      process.env.ASIL_SKILLS_PATH ?? resolve(env.REPO_ROOT, '.asil', 'skills'),
+    markdownSkillsPath: resolveConfiguredPath(
+      env.REPO_ROOT,
+      process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
+    ),
     repoRoot: env.REPO_ROOT,
-    queuePath:
-      process.env.ASIL_QUEUE_PATH ??
-      resolve(env.REPO_ROOT, '.asil', 'usage-data', 'queue.json'),
+    queuePath: resolveConfiguredPath(
+      env.REPO_ROOT,
+      process.env.ASIL_QUEUE_PATH ?? '.asil/usage-data/queue.json',
+    ),
     skipCategories: flags.skipCategories,
     minSeverity: flags.minSeverity,
     dequeueMode: flags.roundRobin ? 'round-robin' : 'priority',

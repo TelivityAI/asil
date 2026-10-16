@@ -3,16 +3,18 @@
  * real API-backed implementations. Pure glue: no domain logic here.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   BudgetManager,
@@ -25,13 +27,14 @@ import type {
   LLMCaller,
   LLMResponse,
 } from 'asil-thought-multiplier';
-import type {
-  CodexCaller,
-  CommandRunner,
-  DiffApplier,
-  FileFetcher,
-  FileReader,
-  GitOperations,
+import {
+  resolveConfiguredPath,
+  type CodexCaller,
+  type CommandRunner,
+  type DiffApplier,
+  type FileFetcher,
+  type FileReader,
+  type GitOperations,
 } from 'asil-improvement-loop';
 
 const execFileAsync = promisify(execFile);
@@ -363,6 +366,74 @@ export function scrubbedEnv(
   return out;
 }
 
+/**
+ * Environment for git and gh. Target-repo hooks must not see model API
+ * keys. Only identity, temp, path, and the tokens those tools need to
+ * authenticate are copied.
+ */
+const GITOPS_ENV_EXACT = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'TERM',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_HOST',
+  'GH_ENTERPRISE_TOKEN',
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'GIT_EXEC_PATH',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GIT_ASKPASS',
+]);
+
+export function gitOpsEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (
+      GITOPS_ENV_EXACT.has(key) ||
+      key.startsWith('GIT_') ||
+      key.startsWith('LC_')
+    ) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** Short stable id so worktrees from different repositories cannot collide. */
+export function worktreeSlug(repoRoot: string): string {
+  return createHash('sha256').update(resolve(repoRoot)).digest('hex').slice(0, 12);
+}
+
+export function worktreePathFor(repoRoot: string, branchName: string): string {
+  const safeName = branchName.replace(/[/\\]/g, '-');
+  return resolve(tmpdir(), `asil-auto-${worktreeSlug(repoRoot)}-${safeName}`);
+}
+
+/** True when `candidate` is the temp worktree directory for `repoRoot`. */
+export function isDeletableWorktree(workDir: string, repoRoot: string): boolean {
+  const abs = resolve(workDir);
+  const tmp = resolve(tmpdir());
+  const prefix = resolve(tmpdir(), `asil-auto-${worktreeSlug(repoRoot)}-`);
+  const underTmp = abs === tmp || abs.startsWith(tmp + sep);
+  return underTmp && abs.startsWith(prefix);
+}
+
+function isInsideRoot(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 /** Real CommandRunner via execFile. Captures stdout, stderr, and exit code
  *  without throwing — callers inspect exitCode to decide.
  *  Pass `{ env: scrubbedEnv() }` for the untrusted target-repo runner so
@@ -435,7 +506,14 @@ export function createFileReader(): FileReader {
 export function createFileFetcher(): FileFetcher {
   return {
     async read(filePath, repoRoot) {
-      const abs = resolve(repoRoot, filePath);
+      if (isAbsolute(filePath) || filePath.split(/[/\\]/).includes('..')) {
+        throw new Error(`Refusing to read a path outside the repository: ${filePath}`);
+      }
+      const root = resolve(repoRoot);
+      const abs = resolve(root, filePath);
+      if (!isInsideRoot(root, abs)) {
+        throw new Error(`Refusing to read a path outside the repository: ${filePath}`);
+      }
       return readFileSync(abs, 'utf8');
     },
   };
@@ -445,10 +523,12 @@ export function createFileFetcher(): FileFetcher {
  *  unified diff. On success the tree stays dirty — the PR builder is
  *  responsible for checking out a fresh branch and re-applying cleanly. */
 export function createDiffApplier(): DiffApplier {
-  const runner = createCommandRunner();
+  const runner = createCommandRunner({ env: scrubbedEnv() });
+  const patchFile = (): string =>
+    join(tmpdir(), `asil-diff-${randomUUID()}.patch`);
   return {
     async apply(diff, repoRoot) {
-      const tmpFile = resolve(repoRoot, '.tmp-auto-diff.patch');
+      const tmpFile = patchFile();
       writeFileSync(tmpFile, diff, 'utf8');
       try {
         const check = await runner.run('git', ['apply', '--check', tmpFile], {
@@ -469,7 +549,7 @@ export function createDiffApplier(): DiffApplier {
       }
     },
     async revert(diff, repoRoot) {
-      const tmpFile = resolve(repoRoot, '.tmp-auto-revert.patch');
+      const tmpFile = patchFile();
       writeFileSync(tmpFile, diff, 'utf8');
       try {
         await runner.run('git', ['apply', '--reverse', tmpFile], {
@@ -501,7 +581,7 @@ export function createGitOps(
   seedPath: string,
   injectedRunner?: CommandRunner,
 ): GitOperations {
-  const runner = injectedRunner ?? createCommandRunner();
+  const runner = injectedRunner ?? createCommandRunner({ env: gitOpsEnv() });
 
   // `seedPath` is wherever the CLI was invoked from — it may be a
   // subdirectory (e.g. `autonomous/runners/`) rather than the repo
@@ -545,8 +625,7 @@ export function createGitOps(
       // Each branch name maps 1:1 to a worktree path so concurrent
       // tasks don't collide. Slashes in the branch name (auto/<cat>/<id>)
       // can't appear in a directory name — swap for dashes.
-      const safeName = name.replace(/\//g, '-');
-      const worktreePath = resolve(tmpdir(), `asil-auto-${safeName}`);
+      const worktreePath = worktreePathFor(repoRoot, name);
 
       // Clear the four possible leftover states from a prior crashed run:
       //   1. Worktree admin record still registered in .git/worktrees/.
@@ -561,6 +640,11 @@ export function createGitOps(
       });
       await runner.run('git', ['worktree', 'prune'], { cwd: repoRoot });
       if (existsSync(worktreePath)) {
+        if (!isDeletableWorktree(worktreePath, repoRoot)) {
+          throw new Error(
+            `Refusing to delete ${worktreePath}: not an ASIL worktree for this repository.`,
+          );
+        }
         await runner.run('rm', ['-rf', worktreePath], { cwd: tmpdir() });
       }
       // `git branch -D` is the fix for "fatal: a branch named '<name>'
@@ -672,7 +756,16 @@ export function createGitOps(
 
     async commit(message, workDir) {
       await mustRunIn(workDir, ['add', '-A']);
-      await mustRunIn(workDir, ['commit', '-m', message]);
+      // Disable the target repository's hooks. They run with this
+      // process's environment and can touch other checkouts.
+      await mustRunIn(workDir, [
+        '-c',
+        'core.hooksPath=/dev/null',
+        'commit',
+        '--no-verify',
+        '-m',
+        message,
+      ]);
     },
 
     async push(branch, workDir) {
@@ -702,7 +795,8 @@ export function createGitOps(
       // `gh pr create` talks to GitHub's API; cwd just needs to be a
       // checkout of the same repo.
       const repoRoot = await gitRoot();
-      const bodyFile = resolve(repoRoot, '.tmp-pr-body.md');
+      const bodyDir = mkdtempSync(join(tmpdir(), 'asil-pr-'));
+      const bodyFile = join(bodyDir, 'body.md');
       writeFileSync(bodyFile, body, 'utf8');
       try {
         const { stdout, stderr, exitCode } = await runner.run(
@@ -743,16 +837,21 @@ export function createGitOps(
     },
 
     async cleanup(workDir) {
-      // Best-effort — never throw from cleanup. First try the worktree
-      // teardown (works when we used `git worktree add`, harmlessly
-      // errors when we used the clone fallback). Then nuke the dir to
-      // catch the clone case OR any worktree residue.
+      // Best-effort — never throw from cleanup. Deletion is limited to
+      // the temp worktree directory for this repository.
       const repoRoot = await gitRoot();
-      await runner.run('git', ['worktree', 'remove', workDir, '--force'], {
+      if (!isDeletableWorktree(workDir, repoRoot)) {
+        console.error(
+          `[git] Refusing to delete ${workDir}: not an ASIL worktree for this repository.`,
+        );
+        return;
+      }
+      const safe = resolve(workDir);
+      await runner.run('git', ['worktree', 'remove', safe, '--force'], {
         cwd: repoRoot,
       });
-      if (existsSync(workDir)) {
-        await runner.run('rm', ['-rf', workDir], { cwd: tmpdir() });
+      if (existsSync(safe)) {
+        await runner.run('rm', ['-rf', safe], { cwd: tmpdir() });
       }
     },
   };
@@ -778,7 +877,7 @@ const DEFAULT_USAGE_DATA_SUBPATH = '.asil/usage-data';
  *  factory for CostCheckpoints. Creates the usage-data dir if missing. */
 export function createCostInfra(repoRoot: string): CostInfra {
   const configured = process.env.ASIL_USAGE_DATA_DIR ?? DEFAULT_USAGE_DATA_SUBPATH;
-  const dataDir = isAbsolute(configured) ? configured : resolve(repoRoot, configured);
+  const dataDir = resolveConfiguredPath(repoRoot, configured);
   mkdirSync(dataDir, { recursive: true });
 
   const tracker = new TokenTracker(resolve(dataDir, 'usage.json'));

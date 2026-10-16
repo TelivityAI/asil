@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { LanguageProfile } from './language-profile.js';
+import { isInsideRoot } from './paths.js';
 import { typescriptProfile } from './profiles/typescript.js';
 import type { ImprovementTask, Severity, TaskCategory } from './types.js';
 
@@ -230,6 +232,7 @@ export async function scanCoverageGaps(
     // Coverage reporters emit absolute file keys; normalize to
     // repo-relative so the executor doesn't reject the path. (#3)
     const filePath = toRepoRelative(repoRoot, entry.filePath);
+    if (!filePath) continue;
     tasks.push(
       makeTask({
         category: 'coverage-gap',
@@ -357,7 +360,7 @@ export function stableTaskId(
   category: TaskCategory,
   filePaths: readonly string[],
 ): string {
-  const key = [category, ...[...filePaths].map(normalizePath).sort()].join(' ');
+  const key = [category, ...[...filePaths].map(normalizePath).sort()].join('\0');
   const hash = createHash('sha1').update(key).digest('hex').slice(0, 12);
   return `${category}-${hash}`;
 }
@@ -393,16 +396,19 @@ export function isEntryPointFile(p: string): boolean {
 
 /**
  * Convert an absolute path under `repoRoot` to a repo-relative path.
- * Coverage tools (vitest's istanbul reporter, coverage.py) emit
- * absolute file keys; left as-is they reach the executor as absolute
- * `<<<FILE: …>>>` paths, which buildPatchFromFiles rejects as
- * suspicious. Paths already relative (or outside repoRoot) are returned
- * unchanged. (Refs Codex review #3.)
+ * Coverage tools emit absolute file keys; left as-is they reach the
+ * executor as absolute `<<<FILE: …>>>` paths, which the patch builder
+ * rejects. Paths outside the repository, and relative paths that climb
+ * out of it, are dropped (`null`) so they are never sent to a model.
  */
-export function toRepoRelative(repoRoot: string, p: string): string {
-  const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
-  if (p.startsWith(root)) return p.slice(root.length);
-  return normalizePath(p);
+export function toRepoRelative(repoRoot: string, p: string): string | null {
+  const normalized = normalizePath(p);
+  if (normalized.split(/[/\\]/).includes('..')) return null;
+  if (!isAbsolute(normalized)) return normalized;
+  const root = resolve(repoRoot);
+  const abs = resolve(normalized);
+  if (abs === root || !isInsideRoot(root, abs)) return null;
+  return relative(root, abs).split(sep).join('/');
 }
 
 /**
