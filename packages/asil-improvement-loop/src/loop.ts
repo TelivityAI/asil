@@ -457,15 +457,56 @@ export async function runLoop(
         break;
       }
 
-      // 7. All gates passed — commit + push from the worktree + open PR.
-      const outcome = await buildAndOpenPR(
-        task,
-        execution,
-        review,
-        adversarial,
-        deps.git,
-        workDir,
-      );
+      // 7. All gates passed. Publish only when the caller opted in.
+      //    Otherwise commit on the local auto/ branch and leave the push
+      //    and pull request for a later run with --apply.
+      let outcome: TaskOutcome;
+      if (config.openPullRequests === false) {
+        const branch = branchNameFor(task);
+        const commitMsg = `auto(${task.category}): ${task.title}`;
+        try {
+          await deps.git.commit(commitMsg, workDir);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(
+            `\n[loop] commit failed for task ${task.id} on ${branch}: ${reason}`,
+          );
+          checkpoint.complete();
+          queue.complete(task.id, 'failed', `commit failed: ${reason}`);
+          outcomes.push({
+            taskId: task.id,
+            status: 'execution-failed',
+            selfReview: review,
+            adversarialReview: adversarial,
+            totalTokenUsage: { ...taskTokens },
+            completedAt: new Date(),
+            prBranch: branch,
+            failureReason: `commit failed: ${reason}`,
+          });
+          continue;
+        }
+        console.error(
+          `[loop] Gates passed for ${task.id}. Committed locally on ${branch}. Re-run with --apply to push and open a pull request.`,
+        );
+        outcome = {
+          taskId: task.id,
+          status: 'committed-local',
+          selfReview: review,
+          adversarialReview: adversarial,
+          totalTokenUsage: { ...taskTokens },
+          completedAt: new Date(),
+          prBranch: branch,
+        };
+      } else {
+        outcome = await buildAndOpenPR(
+          task,
+          execution,
+          review,
+          adversarial,
+          deps.git,
+          workDir,
+        );
+      }
       checkpoint.complete();
 
       // buildAndOpenPR reports execution-only token usage; replace it
@@ -474,7 +515,7 @@ export async function runLoop(
       // spend (Codex review #2).
       outcome.totalTokenUsage = { ...taskTokens };
 
-      if (outcome.status === 'pr-opened') {
+      if (outcome.status === 'pr-opened' || outcome.status === 'committed-local') {
         // Only mark completed when the PR actually opened. A silent
         // failure in commit/push/create used to be mis-marked completed.
         queue.complete(task.id, 'completed');

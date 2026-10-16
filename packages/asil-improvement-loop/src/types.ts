@@ -166,6 +166,7 @@ export interface AdversarialReviewResult {
 
 export type TaskOutcomeStatus =
   | 'pr-opened'
+  | 'committed-local'
   | 'rejected-self-review'
   | 'rejected-adversarial'
   | 'execution-failed'
@@ -215,6 +216,13 @@ export interface ImprovementLoopConfig {
     model: string;
   };
   canaryGate?: CanaryGateConfig;
+  /**
+   * When false, a task that passes every gate is committed on a local
+   * `auto/...` branch and is not pushed or opened as a pull request.
+   * Defaults to true so existing programmatic callers keep publishing.
+   * The CLI sets this from `--apply`.
+   */
+  openPullRequests?: boolean;
 }
 
 /** Shared LLM caller contract — same shape as System B uses. */

@@ -34,7 +34,7 @@ const HELP = `
   Examples:
     pnpm auto think "add rate limiting to the connect API endpoints"
     pnpm auto grind --dry-run
-    pnpm auto grind --max-tasks 3
+    pnpm auto grind --max-tasks 3 --apply
     pnpm auto grind --skip dependency-update,documentation
     pnpm auto grind --skip-questions
     pnpm auto questions
@@ -43,8 +43,11 @@ const HELP = `
     pnpm auto status
 
   Environment:
-    Set ANTHROPIC_API_KEY and OPENAI_API_KEY in autonomous/.env
-    OPENAI_API_KEY only needed for grind (adversarial gate)
+    Set ANTHROPIC_API_KEY and OPENAI_API_KEY in the environment or in
+    the repository root .env (next to pnpm-workspace.yaml).
+    OPENAI_API_KEY is only needed for grind (adversarial gate).
+    grind commits locally unless you pass --apply, which pushes and
+    opens a pull request.
 `.trimStart();
 
 export async function runCli(

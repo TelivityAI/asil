@@ -51,6 +51,8 @@ interface Flags {
   maxTasks: number;
   skipCategories: TaskCategory[];
   dryRun: boolean;
+  /** Push the branch and open a pull request. Off unless --apply is passed. */
+  apply: boolean;
   skipQuestions: boolean;
   /** Directory to write per-task transcripts + findings.md. When set, the
    *  LLM/Codex callers and budget manager are wrapped to capture every
@@ -70,11 +72,12 @@ function resolveProfile(name: 'ts' | 'python'): LanguageProfile {
   return name === 'python' ? pythonProfile : typescriptProfile;
 }
 
-function parseFlags(argv: readonly string[]): Flags | null {
+export function parseFlags(argv: readonly string[]): Flags | null {
   const flags: Flags = {
     maxTasks: 5,
     skipCategories: [],
     dryRun: false,
+    apply: false,
     skipQuestions: false,
     transcriptsDir: null,
     profile: 'ts',
@@ -93,6 +96,8 @@ function parseFlags(argv: readonly string[]): Flags | null {
       i += 1;
     } else if (a === '--dry-run') {
       flags.dryRun = true;
+    } else if (a === '--apply') {
+      flags.apply = true;
     } else if (a === '--skip-questions') {
       flags.skipQuestions = true;
     } else if (a === '--transcripts' && argv[i + 1]) {
@@ -131,6 +136,9 @@ Options:
   --max-tasks N       Max tasks per run (default: 5)
   --skip cat1,cat2    Skip categories (e.g. dependency-update,documentation)
   --dry-run           Scan and report tasks without executing
+  --apply             Push passing changes and open a pull request.
+                      Without this flag the loop still runs the gates and
+                      commits on a local auto/ branch, but does not push.
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
   --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
@@ -194,7 +202,10 @@ export async function main(): Promise<void> {
   );
   console.log(`   Min severity: ${flags.minSeverity}`);
   console.log(`   Order: ${flags.roundRobin ? 'round-robin' : 'priority'}`);
-  console.log(`   Dry run: ${flags.dryRun}\n`);
+  console.log(`   Dry run: ${flags.dryRun}`);
+  console.log(
+    `   Publish: ${flags.apply ? 'push and open a pull request' : 'local commit only (pass --apply to publish)'}\n`,
+  );
 
   const profile = resolveProfile(flags.profile);
 
@@ -313,6 +324,7 @@ export async function main(): Promise<void> {
     skipCategories: flags.skipCategories,
     minSeverity: flags.minSeverity,
     dequeueMode: flags.roundRobin ? 'round-robin' : 'priority',
+    openPullRequests: flags.apply,
     codexConfig: {
       apiKey: 'OPENAI_API_KEY',
       model: 'gpt-4o',
@@ -415,6 +427,16 @@ export async function main(): Promise<void> {
   console.log(`   Budget exhausted: ${result.budgetExhausted}`);
   console.log(`   Cycles detected: ${result.cyclesDetected}`);
 
+  const held = result.outcomes.filter((o) => o.status === 'committed-local');
+  if (held.length > 0) {
+    console.log('\nLocal commits (not pushed):');
+    for (const outcome of held) {
+      console.log(
+        `   ${outcome.prBranch ?? outcome.taskId} — re-run with --apply to push and open a pull request`,
+      );
+    }
+  }
+
   const prs = result.outcomes.filter((o) => o.status === 'pr-opened');
   if (prs.length > 0) {
     console.log('\n🎉 PRs opened:');
@@ -445,7 +467,12 @@ export async function main(): Promise<void> {
   // failed rather than just a count. The verbose executor + loop
   // logging prints the full error at the moment it happens; this is
   // the end-of-run summary view.
-  const failed = result.outcomes.filter((o) => o.status !== 'pr-opened' && o.status !== 'cycle-skipped');
+  const failed = result.outcomes.filter(
+    (o) =>
+      o.status !== 'pr-opened' &&
+      o.status !== 'committed-local' &&
+      o.status !== 'cycle-skipped',
+  );
   if (failed.length > 0) {
     console.log('\n⚠️  Failure detail:');
     const { TaskQueue } = await import('asil-improvement-loop');
