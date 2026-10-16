@@ -5,8 +5,6 @@
  * project rules, and asks the LLM to respond in a structured JSON
  * envelope we can parse back into ThinkerOutput.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type {
   Concern,
   LLMCaller,
@@ -19,6 +17,7 @@ import type {
   Priority,
   Severity,
 } from '../types.js';
+import { loadSkillMarkdown } from '../skill-loader.js';
 
 /** Default engineering rules injected into every thinker's system prompt. */
 const PROJECT_RULES = `
@@ -69,7 +68,7 @@ const VALID_SEVERITIES: readonly Severity[] = ['blocker', 'warning', 'note'];
 export interface ThinkerPromptParts {
   /** Content-type heading used in the system prompt ("Spec Writer", etc.) */
   label: string;
-  /** Filename of the Markdown skill (relative to markdownSkillsPath/skills). */
+  /** Skill basename (`name` or `name.md`) resolved under markdownSkillsPath. */
   skillFile?: string;
   /** Fallback instructions if the Markdown skill file can't be read. */
   fallbackInstructions: string;
@@ -81,11 +80,7 @@ export function loadMarkdownSkill(
   fallback: string,
 ): string {
   if (!skillFile) return fallback;
-  try {
-    return readFileSync(join(markdownSkillsPath, 'skills', skillFile), 'utf8');
-  } catch {
-    return fallback;
-  }
+  return loadSkillMarkdown(markdownSkillsPath, skillFile) ?? fallback;
 }
 
 export function buildSystemPrompt(

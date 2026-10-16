@@ -51,6 +51,11 @@ export {
   type FileBlock,
   type FileFetcher,
 } from './executor.js';
+export {
+  loadSkillMarkdown,
+  skillCandidatePaths,
+  SKILL_NAME_ALIASES,
+} from './skill-loader.js';
 export { selfReview } from './self-review.js';
 export {
   adversarialReview,

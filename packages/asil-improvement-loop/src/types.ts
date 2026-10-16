@@ -26,6 +26,10 @@ export const CATEGORY_PRIORITY: Record<TaskCategory, number> = {
   documentation: 8,
 };
 
+/**
+ * Category → skill basename. `loadSkillMarkdown` also tries aliases and
+ * both `{name}.md` and `{name}/SKILL.md` under the configured skills path.
+ */
 export const CATEGORY_SKILL_MAP: Record<TaskCategory, string> = {
   'test-failure': 'test-coverage-improvement',
   'type-error': 'code-simplification',

@@ -9,8 +9,19 @@ import type {
   LLMCaller,
   LLMResponse,
 } from './types.js';
+import {
+  extractAntiRationalization,
+  loadSkillMarkdown,
+} from './skill-loader.js';
 import { CATEGORY_SKILL_MAP } from './types.js';
 import type { CommandRunner } from './scanner.js';
+
+export { extractAntiRationalization } from './skill-loader.js';
+export {
+  loadSkillMarkdown,
+  skillCandidatePaths,
+  SKILL_NAME_ALIASES,
+} from './skill-loader.js';
 
 /**
  * Structured logger contract. Defaults to stderr via `console.error`,
@@ -467,11 +478,7 @@ async function defaultSkillLoader(
   skillsPath: string,
   skillName: string,
 ): Promise<string> {
-  try {
-    return readFileSync(join(skillsPath, 'skills', `${skillName}.md`), 'utf8');
-  } catch {
-    return '';
-  }
+  return loadSkillMarkdown(skillsPath, skillName);
 }
 
 function defaultReadFile(absPath: string): string | null {
@@ -480,27 +487,6 @@ function defaultReadFile(absPath: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** Extracts the anti-rationalization table — a section commonly titled
- *  "Anti-Rationalization Table" in the configured skills. Returns the skill
- *  content unchanged if we can't locate it. */
-export function extractAntiRationalization(skill: string): string {
-  if (!skill) return '';
-  const lines = skill.split(/\r?\n/);
-  const startIdx = lines.findIndex((l) =>
-    /^#{1,6}\s*anti[- ]?rationalization/i.test(l),
-  );
-  if (startIdx === -1) return '';
-  const afterStart = lines.slice(startIdx);
-  const nextHeaderIdx = afterStart
-    .slice(1)
-    .findIndex((l) => /^#{1,6}\s+/.test(l));
-  const slice =
-    nextHeaderIdx === -1
-      ? afterStart
-      : afterStart.slice(0, nextHeaderIdx + 1);
-  return slice.join('\n').trim();
 }
 
 export function buildExecutionPrompt(

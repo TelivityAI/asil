@@ -19,7 +19,7 @@ export async function runSecurity(
     'security',
     {
       label: 'Security Review',
-      skillFile: 'security-review.md',
+      skillFile: 'security-and-hardening.md',
       fallbackInstructions: FALLBACK,
     },
     request,
