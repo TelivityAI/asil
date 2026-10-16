@@ -55,6 +55,15 @@ export interface ScannerDeps {
  * `profile` defaults to TypeScript for backwards compatibility with
  * callers built before the multi-language refactor.
  */
+/** Categories `scanCodebase` actually runs. */
+export const SCANNED_CATEGORIES = [
+  'test-failure',
+  'type-error',
+  'todo-resolution',
+  'coverage-gap',
+  'dead-code',
+] as const;
+
 export async function scanCodebase(
   repoRoot: string,
   deps: ScannerDeps,

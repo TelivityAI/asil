@@ -18,11 +18,14 @@ import {
   writePerTaskTranscripts,
 } from 'asil-analyzer';
 import {
+  CATEGORY_SKILL_MAP,
   createDomainAnswerStore,
   findDomainQuestions,
+  findSkillFile,
   pythonProfile,
   resolveConfiguredPath,
   runLoop,
+  SCANNED_CATEGORIES,
   scanCodebase,
   typescriptProfile,
   type ImprovementLoopConfig,
@@ -31,12 +34,11 @@ import {
   type Severity,
   type TaskCategory,
 } from 'asil-improvement-loop';
+import { createSandboxedCommandRunner } from './sandbox.js';
 import {
   createAnthropicCaller,
   createCodexCaller,
-  createCommandRunner,
   createCostInfra,
-  scrubbedEnv,
   createDiffApplier,
   createFileFetcher,
   createFileReader,
@@ -64,12 +66,38 @@ interface Flags {
   minSeverity: Severity;
   /** Rotate through categories so one busy category can't starve the rest. */
   roundRobin: boolean;
+  /** Exit before scanning when a scanned category has no skill file. */
+  requireSkills: boolean;
 }
 
 const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
 
 function resolveProfile(name: 'ts' | 'python'): LanguageProfile {
   return name === 'python' ? pythonProfile : typescriptProfile;
+}
+
+export interface SkillStatus {
+  category: TaskCategory;
+  skill: string;
+  path: string | null;
+}
+
+/** One status per category the scanner will run, after --skip. */
+export function skillStatuses(
+  skillsPath: string,
+  skip: readonly string[],
+): SkillStatus[] {
+  return SCANNED_CATEGORIES.filter((category) => !skip.includes(category)).map(
+    (category) => {
+      const skill = CATEGORY_SKILL_MAP[category];
+      return { category, skill, path: findSkillFile(skillsPath, skill) };
+    },
+  );
+}
+
+export function formatSkillStatus(status: SkillStatus): string {
+  if (status.path) return `   ${status.category} (${status.skill}): ${status.path}`;
+  return `   ${status.category} (${status.skill}): missing, using built-in instructions`;
 }
 
 export function parseFlags(argv: readonly string[]): Flags | null {
@@ -83,6 +111,7 @@ export function parseFlags(argv: readonly string[]): Flags | null {
     profile: 'ts',
     minSeverity: 'low',
     roundRobin: false,
+    requireSkills: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -123,6 +152,8 @@ export function parseFlags(argv: readonly string[]): Flags | null {
       i += 1;
     } else if (a === '--round-robin') {
       flags.roundRobin = true;
+    } else if (a === '--require-skills') {
+      flags.requireSkills = true;
     } else if (a === '--help' || a === '-h') {
       return null;
     }
@@ -153,13 +184,29 @@ Options:
   --round-robin       Rotate through task categories instead of strict
                       priority order, so one busy category can't starve the
                       rest within a run.
-  --help, -h          Show this help`;
+  --require-skills    Exit before scanning when a scanned category has no
+                      skill file. Without this flag a missing skill uses the
+                      built-in instructions.
+  --help, -h          Show this help
+
+Environment:
+  REPO_ROOT           Required. Absolute path of the target repository.
+                      grind does not default to the current directory.
+  ASIL_SANDBOX        Set to off to run target-repository commands without
+                      the bubblewrap jail. Default is on.`
 
 export async function main(): Promise<void> {
   const flags = parseFlags(process.argv.slice(2));
   if (!flags) {
     console.log(HELP);
     process.exit(0);
+  }
+
+  if (!process.env.REPO_ROOT) {
+    console.error(
+      'REPO_ROOT is required for grind. Set it to the absolute path of the target repository.',
+    );
+    process.exit(1);
   }
 
   const env = loadEnv();
@@ -185,14 +232,9 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // The loop's runner executes untrusted target-repo code (pnpm
-  // install/build/test, tsc, grep) inside worktrees. Strip secrets from
-  // its environment so a malicious postinstall, build, or test script
-  // cannot exfiltrate ANTHROPIC_API_KEY, OPENAI_API_KEY, or git tokens.
-  // The LLM callers hold their keys in this process (read at
-  // construction), so they are unaffected. Git and gh use a separate
-  // allowlisted environment.
-  const runner = createCommandRunner({ env: scrubbedEnv() });
+  // Target-repo commands run inside bubblewrap. Git and gh use a
+  // separate allowlisted runner and are not wrapped here.
+  const runner = createSandboxedCommandRunner();
   const fileReader = createFileReader();
 
   console.log('\n🔄 System A — Autonomous Improvement Loop');
@@ -204,8 +246,26 @@ export async function main(): Promise<void> {
   console.log(`   Order: ${flags.roundRobin ? 'round-robin' : 'priority'}`);
   console.log(`   Dry run: ${flags.dryRun}`);
   console.log(
-    `   Publish: ${flags.apply ? 'push and open a pull request' : 'off (pass --apply to publish)'}\n`,
+    `   Publish: ${flags.apply ? 'push and open a pull request' : 'off (pass --apply to publish)'}`,
   );
+  console.log(
+    `   --apply updates the loop's auto/* branches and opens pull requests.\n`,
+  );
+
+  const skillsPath = resolveConfiguredPath(
+    env.REPO_ROOT,
+    process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
+  );
+  const skills = skillStatuses(skillsPath, flags.skipCategories);
+  console.log('Skills:');
+  for (const status of skills) console.log(formatSkillStatus(status));
+  console.log('');
+  if (flags.requireSkills && skills.some((status) => status.path === null)) {
+    console.error(
+      'Missing skills. Refusing to continue because --require-skills was set.',
+    );
+    process.exit(1);
+  }
 
   const profile = resolveProfile(flags.profile);
 
@@ -312,10 +372,7 @@ export async function main(): Promise<void> {
     maxTasksPerRun: flags.maxTasks,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    markdownSkillsPath: resolveConfiguredPath(
-      env.REPO_ROOT,
-      process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
-    ),
+    markdownSkillsPath: skillsPath,
     repoRoot: env.REPO_ROOT,
     queuePath: resolveConfiguredPath(
       env.REPO_ROOT,
