@@ -169,10 +169,13 @@ describe('runLoop — integration', () => {
     });
 
     expect(result.prsOpened).toBe(0);
-    expect(result.outcomes[0]?.status).toBe('committed-local');
-    expect(git.operations.some((op) => op.startsWith('commit:'))).toBe(true);
+    expect(result.outcomes[0]?.status).toBe('publish-skipped');
+    expect(git.operations.some((op) => op.startsWith('commit:'))).toBe(false);
     expect(git.operations.some((op) => op.startsWith('push:'))).toBe(false);
     expect(git.operations.some((op) => op.startsWith('createPR:'))).toBe(false);
+    const again = queue.dequeue();
+    expect(again?.task.id).toBe('t-local');
+    expect(again?.attempts).toBe(1);
   });
 
   it('pushes and opens a pull request when openPullRequests is true', async () => {

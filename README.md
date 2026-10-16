@@ -100,7 +100,7 @@ This is process-level hardening. It removes the credential-exfiltration vector f
 - Git and `gh` do not inherit model API keys. Commits set `core.hooksPath` to `/dev/null` and pass `--no-verify`, so hooks in the target repository do not run.
 - Worktrees live under the system temp directory and include a hash of the repository path, so two repositories cannot delete each other's worktrees. Cleanup refuses to delete anything else.
 - Patch file reads stay inside the target repository. Relative paths configured for usage data, the queue, skills, and domain answers cannot climb out of the repository. Absolute paths are used as given.
-- `auto grind` commits on a local `auto/` branch. Pass `--apply` to push that branch and open a pull request.
+- `auto grind` does not commit, push, or open a pull request unless you pass `--apply`. Without that flag a task that passes the gates stays queued for a later run.
 
 It does **not** sandbox the filesystem or network. A hostile repository's build or test can still read local files or make network calls. For an untrusted repository, run ASIL inside a container that does not share your home directory or network.
 

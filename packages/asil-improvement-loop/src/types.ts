@@ -166,7 +166,7 @@ export interface AdversarialReviewResult {
 
 export type TaskOutcomeStatus =
   | 'pr-opened'
-  | 'committed-local'
+  | 'publish-skipped'
   | 'rejected-self-review'
   | 'rejected-adversarial'
   | 'execution-failed'
@@ -217,10 +217,11 @@ export interface ImprovementLoopConfig {
   };
   canaryGate?: CanaryGateConfig;
   /**
-   * When false, a task that passes every gate is committed on a local
-   * `auto/...` branch and is not pushed or opened as a pull request.
-   * Defaults to true so existing programmatic callers keep publishing.
-   * The CLI sets this from `--apply`.
+   * When false, a task that passes every gate is not committed, pushed,
+   * or opened as a pull request. The task stays queued so a later run
+   * with publishing enabled can do that work. Defaults to true so
+   * existing programmatic callers keep publishing. The CLI sets this
+   * from `--apply`.
    */
   openPullRequests?: boolean;
 }

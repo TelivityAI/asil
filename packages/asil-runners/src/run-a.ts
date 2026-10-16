@@ -137,8 +137,8 @@ Options:
   --skip cat1,cat2    Skip categories (e.g. dependency-update,documentation)
   --dry-run           Scan and report tasks without executing
   --apply             Push passing changes and open a pull request.
-                      Without this flag the loop still runs the gates and
-                      commits on a local auto/ branch, but does not push.
+                      Without this flag the loop still runs the gates, then
+                      stops before commit, push, and pull request creation.
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
   --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
@@ -204,7 +204,7 @@ export async function main(): Promise<void> {
   console.log(`   Order: ${flags.roundRobin ? 'round-robin' : 'priority'}`);
   console.log(`   Dry run: ${flags.dryRun}`);
   console.log(
-    `   Publish: ${flags.apply ? 'push and open a pull request' : 'local commit only (pass --apply to publish)'}\n`,
+    `   Publish: ${flags.apply ? 'push and open a pull request' : 'off (pass --apply to publish)'}\n`,
   );
 
   const profile = resolveProfile(flags.profile);
@@ -427,12 +427,12 @@ export async function main(): Promise<void> {
   console.log(`   Budget exhausted: ${result.budgetExhausted}`);
   console.log(`   Cycles detected: ${result.cyclesDetected}`);
 
-  const held = result.outcomes.filter((o) => o.status === 'committed-local');
+  const held = result.outcomes.filter((o) => o.status === 'publish-skipped');
   if (held.length > 0) {
-    console.log('\nLocal commits (not pushed):');
+    console.log('\nVerified, not published:');
     for (const outcome of held) {
       console.log(
-        `   ${outcome.prBranch ?? outcome.taskId} — re-run with --apply to push and open a pull request`,
+        `   ${outcome.taskId} — re-run with --apply to push and open a pull request`,
       );
     }
   }
@@ -470,7 +470,7 @@ export async function main(): Promise<void> {
   const failed = result.outcomes.filter(
     (o) =>
       o.status !== 'pr-opened' &&
-      o.status !== 'committed-local' &&
+      o.status !== 'publish-skipped' &&
       o.status !== 'cycle-skipped',
   );
   if (failed.length > 0) {

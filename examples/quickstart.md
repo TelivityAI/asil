@@ -82,7 +82,7 @@ The runner will:
 
 1. Scan and queue tasks
 2. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage
-3. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard, then commit locally. `--apply` also pushes and opens a pull request.
+3. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard. `--apply` then commits, pushes, and opens a pull request. Without `--apply` the task stays queued.
 4. Print a summary with cost spent and PRs opened
 
 ## 7. Inspect the spend

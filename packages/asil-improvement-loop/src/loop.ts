@@ -116,6 +116,10 @@ export async function runLoop(
   const outcomes: TaskOutcome[] = [];
   let cyclesDetected = 0;
   let budgetExhausted = false;
+  // Tasks verified but not published. They are ineligible for the rest
+  // of this run, then returned to the queue so --apply can publish them
+  // later without consuming an attempt.
+  const deferredPublish: string[] = [];
 
   // 1. Scan for new tasks. Scanning reads the real repo — it's
   //    read-only, so no worktree needed here.
@@ -458,55 +462,40 @@ export async function runLoop(
       }
 
       // 7. All gates passed. Publish only when the caller opted in.
-      //    Otherwise commit on the local auto/ branch and leave the push
-      //    and pull request for a later run with --apply.
-      let outcome: TaskOutcome;
+      //    Otherwise leave the task queued. The worktree is removed in
+      //    `finally`, and a later run with --apply can commit and push.
       if (config.openPullRequests === false) {
-        const branch = branchNameFor(task);
-        const commitMsg = `auto(${task.category}): ${task.title}`;
-        try {
-          await deps.git.commit(commitMsg, workDir);
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          console.error(
-            `\n[loop] commit failed for task ${task.id} on ${branch}: ${reason}`,
-          );
-          checkpoint.complete();
-          queue.complete(task.id, 'failed', `commit failed: ${reason}`);
-          outcomes.push({
-            taskId: task.id,
-            status: 'execution-failed',
-            selfReview: review,
-            adversarialReview: adversarial,
-            totalTokenUsage: { ...taskTokens },
-            completedAt: new Date(),
-            prBranch: branch,
-            failureReason: `commit failed: ${reason}`,
-          });
-          continue;
-        }
         console.error(
-          `[loop] Gates passed for ${task.id}. Committed locally on ${branch}. Re-run with --apply to push and open a pull request.`,
+          `[loop] Gates passed for ${task.id}. No pull request opened. Re-run with --apply to push and open a pull request.`,
         );
-        outcome = {
+        checkpoint.complete();
+        queue.complete(task.id, 'skipped', 'Awaiting --apply');
+        deferredPublish.push(task.id);
+        outcomes.push({
           taskId: task.id,
-          status: 'committed-local',
+          status: 'publish-skipped',
           selfReview: review,
           adversarialReview: adversarial,
           totalTokenUsage: { ...taskTokens },
           completedAt: new Date(),
-          prBranch: branch,
-        };
-      } else {
-        outcome = await buildAndOpenPR(
-          task,
-          execution,
-          review,
-          adversarial,
-          deps.git,
-          workDir,
-        );
+          prBranch: branchNameFor(task),
+        });
+        if (config.taskCooldownMs > 0 && i < config.maxTasksPerRun - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, config.taskCooldownMs),
+          );
+        }
+        continue;
       }
+
+      const outcome = await buildAndOpenPR(
+        task,
+        execution,
+        review,
+        adversarial,
+        deps.git,
+        workDir,
+      );
       checkpoint.complete();
 
       // buildAndOpenPR reports execution-only token usage; replace it
@@ -515,7 +504,7 @@ export async function runLoop(
       // spend (Codex review #2).
       outcome.totalTokenUsage = { ...taskTokens };
 
-      if (outcome.status === 'pr-opened' || outcome.status === 'committed-local') {
+      if (outcome.status === 'pr-opened') {
         // Only mark completed when the PR actually opened. A silent
         // failure in commit/push/create used to be mis-marked completed.
         queue.complete(task.id, 'completed');
@@ -571,6 +560,8 @@ export async function runLoop(
       }
     }
   }
+
+  for (const id of deferredPublish) queue.release(id);
 
   return {
     tasksProcessed: outcomes.length,
