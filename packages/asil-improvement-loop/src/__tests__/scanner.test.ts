@@ -131,7 +131,7 @@ describe('scanner', () => {
       // pnpm-recursive output prefixes every line with `<pkg> <script>: `.
       // Without the strip, the file path used to capture as e.g.
       // "apps/api typecheck: src/database/database.module.ts" — a path
-      // no executor could satisfy. Refs github.com/telivity-otaip/asil#1.
+      // no executor could satisfy. See issue #1.
       const tscOut = [
         'apps/api typecheck: src/database/database.module.ts(5,1): error TS2307: Cannot find module \'@x/db\'.',
         'apps/api typecheck: src/foo.ts(10,2): error TS2322: Type string is not assignable to number.',

@@ -9,7 +9,7 @@
   "files": ["dist", "README.md"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/telivity-otaip/asil.git",
+    "url": "git+https://github.com/TelivityAI/asil.git",
     "directory": "packages/asil-analyzer"
   },
   "publishConfig": { "access": "public" },

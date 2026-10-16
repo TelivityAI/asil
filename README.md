@@ -45,14 +45,14 @@ Token budget governor. The substrate every other system runs on.
 - `TokenTracker` persists actual spend to disk
 - `CostCheckpoint` is the runtime API: every LLM call passes through it, and it can refuse the call when budget is exhausted
 - `KillSwitch` enforces hard daily caps
-- `UsageReporter` formats spend rollups for inbox / Slack delivery
+- `UsageReporter` formats spend rollups as Markdown
 - `decimal.js` for every cost calculation — no float drift on currency
 
 ### System B — Thought Multiplier
 
 Strategic thinking layer. Use this when one model giving one answer isn't good enough.
 
-- A **router** decides which specialized thinkers a request needs (architecture, planning, test strategy, security, API design, spec writing)
+- A **router** decides which specialized thinkers a request needs (planning, test strategy, security, API design, spec writing)
 - Each **thinker** runs independently with its own system prompt and JSON output envelope
 - A **synthesizer** merges their recommendations, surfaces conflicts, and computes a confidence score
 - The **papa agent** (Opus-tier) resolves conflicts and produces a final handoff brief
@@ -95,7 +95,14 @@ ASIL executes target-repo code (`pnpm install`, build, tests) inside disposable 
 - **Secrets are stripped from the execution environment.** The runner that executes target-repo commands gets a scrubbed env — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and git/GitHub tokens are never in scope, so a malicious `postinstall`/build/test script can't exfiltrate them. The git/`gh` operations that genuinely need a token use a separate, full-env runner (credential separation).
 - **Install lifecycle scripts are disabled by default** (`pnpm install --ignore-scripts`). Opt back in with `ASIL_ALLOW_INSTALL_SCRIPTS=1` only for repos you trust.
 
-This is process-level hardening (Level 1). It removes the credential-exfiltration vector but does **not** sandbox the filesystem or network — a hostile repo's build/test can still read local files or make network calls. For genuinely adversarial input, run ASIL inside a container with `--network=none` (containerized exec is a planned opt-in). See the design notes in the private KB.
+This is process-level hardening. It removes the credential-exfiltration vector for install, build, and test, and it adds the following limits:
+
+- Git and `gh` do not inherit model API keys. Commits set `core.hooksPath` to `/dev/null` and pass `--no-verify`, so hooks in the target repository do not run.
+- Worktrees live under the system temp directory and include a hash of the repository path, so two repositories cannot delete each other's worktrees. Cleanup refuses to delete anything else.
+- Patch file reads stay inside the target repository. Relative paths configured for usage data, the queue, skills, and domain answers cannot climb out of the repository. Absolute paths are used as given.
+- `auto grind` commits on a local `auto/` branch. Pass `--apply` to push that branch and open a pull request.
+
+It does **not** sandbox the filesystem or network. A hostile repository's build or test can still read local files or make network calls. For an untrusted repository, run ASIL inside a container that does not share your home directory or network.
 
 ### Languages — Python profile
 
@@ -120,7 +127,7 @@ pnpm --filter asil-runners run:b "add rate limiting to the connect API endpoint"
 
 # 4. Run the autonomous loop (System A)
 pnpm --filter asil-runners auto grind --dry-run
-pnpm --filter asil-runners auto grind --max-tasks 3
+pnpm --filter asil-runners auto grind --max-tasks 3 --apply
 ```
 
 See [`examples/quickstart.md`](examples/quickstart.md) for a five-minute integration walkthrough.
@@ -128,7 +135,7 @@ See [`examples/quickstart.md`](examples/quickstart.md) for a five-minute integra
 ## What it looks like
 
 ```
-$ pnpm --filter asil-runners auto grind --max-tasks 5
+$ pnpm --filter asil-runners auto grind --max-tasks 5 --apply
 
 🤖 ASIL — Autonomous Improvement Loop
    Repo: /workspace/your-app
@@ -211,10 +218,10 @@ Every LLM call in B and A flows through a `CostCheckpoint`. Each checkpoint is b
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | env | required | Primary LLM |
 | `OPENAI_API_KEY` | env | required | Adversarial gate (different provider) |
-| `REPO_ROOT` | env | required | Absolute path to the target repo |
-| `ASIL_USAGE_DATA_DIR` | env | `<REPO_ROOT>/.asil/usage-data` | Cost tracker state |
-| `ASIL_QUEUE_PATH` | env | `<REPO_ROOT>/.asil/usage-data/queue.json` | Task queue |
-| `ASIL_SKILLS_PATH` | env | `<REPO_ROOT>/.asil/skills` | Markdown skills the thinkers load |
+| `REPO_ROOT` | env | current working directory | Absolute path to the target repo. Set this explicitly. |
+| `ASIL_USAGE_DATA_DIR` | env | `<REPO_ROOT>/.asil/usage-data` | Cost tracker state. Relative values must stay inside the repo. |
+| `ASIL_QUEUE_PATH` | env | `<REPO_ROOT>/.asil/usage-data/queue.json` | Task queue. Relative values must stay inside the repo. |
+| `ASIL_SKILLS_PATH` | env | `<REPO_ROOT>/.asil/skills` | Markdown skills. Files are `{name}.md` or `{name}/SKILL.md` directly under this directory. |
 | `ASIL_DOMAIN_ANSWERS_PATH` | env | `<REPO_ROOT>/.asil/domain-answers.json` | Resolved domain answers |
 | `papaModel` / `thinkerModel` | `ThoughtMultiplierConfig` | `opus` / `sonnet` | Model tiers per role |
 | `executionModel` / `reviewModel` | `ImprovementLoopConfig` | `sonnet` / `sonnet` | Model tiers in System A |
@@ -230,49 +237,57 @@ Every LLM call in B and A flows through a `CostCheckpoint`. Each checkpoint is b
 
 ## Integration
 
-ASIL is a TypeScript monorepo. Add the four packages to your workspace and wire them up via the `LoopDeps` and `LLMCaller` interfaces.
+ASIL is a TypeScript monorepo. The four library packages are not published to npm yet — vendor this repository and add `asil/packages/*` to your workspace. `asil-runners` is a private reference CLI. Import its wiring from the vendored source (`packages/asil-runners/src/wiring.ts`); it has no package entry point.
+
+`runLoop` takes the config first and the dependencies second:
 
 ```ts
 import { runLoop } from 'asil-improvement-loop';
 import {
   createAnthropicCaller,
   createCodexCaller,
-  createGitOps,
+  createCommandRunner,
   createCostInfra,
   createDiffApplier,
   createFileFetcher,
-} from 'asil-runners';
+  createFileReader,
+  createGitOps,
+  scrubbedEnv,
+} from './wiring.js';
 
-const llm = createAnthropicCaller(process.env.ANTHROPIC_API_KEY!);
-const codex = createCodexCaller(process.env.OPENAI_API_KEY!);
-const git = createGitOps(process.env.REPO_ROOT!);
-const cost = createCostInfra(process.env.REPO_ROOT!);
-const diff = createDiffApplier();
-const files = createFileFetcher();
+const repoRoot = process.env.REPO_ROOT!;
+const cost = createCostInfra(repoRoot);
 
-await runLoop({
-  llm,
-  codex,
-  git,
-  diff,
-  fileFetcher: files,
-  costInfra: cost,
-  config: {
+await runLoop(
+  {
     executionModel: 'sonnet',
     reviewModel: 'sonnet',
     maxTasksPerRun: 5,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    markdownSkillsPath: '.asil/skills',
-    repoRoot: process.env.REPO_ROOT!,
-    queuePath: '.asil/usage-data/queue.json',
+    markdownSkillsPath: `${repoRoot}/.asil/skills`,
+    repoRoot,
+    queuePath: `${repoRoot}/.asil/usage-data/queue.json`,
     skipCategories: [],
+    // Set true only when this process should push and open a pull request.
+    openPullRequests: false,
     codexConfig: { apiKey: 'OPENAI_API_KEY', model: 'gpt-4o' },
   },
-});
+  {
+    llm: createAnthropicCaller(process.env.ANTHROPIC_API_KEY!),
+    codex: createCodexCaller(process.env.OPENAI_API_KEY!),
+    git: createGitOps(repoRoot),
+    tracker: cost.tracker,
+    budgetManager: cost.budgetManager,
+    runner: createCommandRunner({ env: scrubbedEnv() }),
+    fileReader: createFileReader(),
+    fileFetcher: createFileFetcher(),
+    diff: createDiffApplier(),
+  },
+);
 ```
 
-`LLMCaller` is a tiny mock-friendly interface (`call(systemPrompt, userPrompt, model) → Promise<{content, inputTokens, outputTokens}>`). The shipped wirings cover Anthropic and OpenAI; swapping in a local model, a self-hosted relay, or a different provider is a one-file change.
+`LLMCaller` is a tiny mock-friendly interface (`call(systemPrompt, userPrompt, model) → Promise<{content, inputTokens, outputTokens}>`). The shipped wirings cover Anthropic, OpenAI, and any OpenAI-compatible HTTP server.
 
 ## Key innovations
 

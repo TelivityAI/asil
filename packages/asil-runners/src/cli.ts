@@ -2,9 +2,10 @@
 /**
  * Unified `pnpm auto` entry point for all three autonomous systems.
  *
- * Loads env from autonomous/.env on startup so nothing else has to
- * `export ANTHROPIC_API_KEY=...` by hand, dispatches to the matching
- * runner's `main()`, and surfaces a concise budget `status` view.
+ * Loads env from the workspace-root .env (the directory that contains
+ * pnpm-workspace.yaml) so nothing else has to export API keys by hand,
+ * dispatches to the matching runner's main(), and surfaces a concise
+ * budget status view.
  */
 import { config as loadDotenv } from 'dotenv';
 import { existsSync } from 'node:fs';
@@ -12,9 +13,24 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// autonomous/.env — one dir up from src/, then one more up from runners/.
-const envPath = resolve(here, '..', '..', '.env');
-if (existsSync(envPath)) {
+
+/** `.env` next to the nearest pnpm-workspace.yaml, walking up from `start`. */
+export function workspaceEnvPath(start: string): string | null {
+  let dir = resolve(start);
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(resolve(dir, 'pnpm-workspace.yaml'))) {
+      const envFile = resolve(dir, '.env');
+      return existsSync(envFile) ? envFile : null;
+    }
+    const parent = resolve(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+const envPath = workspaceEnvPath(here);
+if (envPath) {
   loadDotenv({ path: envPath });
 }
 

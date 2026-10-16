@@ -19,17 +19,13 @@ packages:
   - "asil/packages/*"   # add this line
 ```
 
-`pnpm install` will link them in. Or, once published, install the library packages from npm:
+`pnpm install` will link them in. The library packages are not on npm yet, so install them from this git repository rather than with `pnpm add`.
 
-```bash
-pnpm add asil-cost-controller asil-thought-multiplier asil-improvement-loop asil-analyzer
-```
-
-(`asil-runners` is the reference CLI/app, not a published library — vendor it or copy its wiring. The four libraries above are what you compose into your own runner.)
+(`asil-runners` is the reference CLI, not a library — vendor it or copy its wiring. The four libraries above are what you compose into your own runner.)
 
 ## 2. Set up environment
 
-Create `.env` in your repo root:
+Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-…
@@ -39,16 +35,24 @@ REPO_ROOT=/absolute/path/to/your/repo
 
 ## 3. Drop in the runner skills
 
-ASIL's thinkers expect Markdown skill files at `<REPO_ROOT>/.asil/skills/`. The simplest setup:
+Thinkers and the executor load Markdown from `ASIL_SKILLS_PATH` (default `<REPO_ROOT>/.asil/skills`). Both of these layouts work, with the flat file tried first:
+
+```bash
+# Flat file
+.asil/skills/planning-and-task-breakdown.md
+
+# Directory layout used by many public skill libraries
+.asil/skills/planning-and-task-breakdown/SKILL.md
+```
+
+Historical names such as `security-review` also resolve to `security-and-hardening`. A missing file falls back to the inline instructions.
 
 ```bash
 mkdir -p .asil/skills
-# Copy or symlink any Markdown skills (e.g. from a public skill library) you want to use.
-# A minimal install is fine — the thinkers fall back to inline defaults
-# if a skill file is missing.
+# Copy or symlink the skill files you want. A minimal install is fine.
 ```
 
-Override the location with `ASIL_SKILLS_PATH` if you want them somewhere else.
+Override the location with `ASIL_SKILLS_PATH`. A relative value must stay inside the repository. An absolute value is used as given.
 
 ## 4. Run System B (Thought Multiplier) standalone
 
@@ -66,19 +70,19 @@ You'll get a Markdown brief with merged recommendations, conflict resolutions, a
 pnpm --filter asil-runners auto grind --dry-run
 ```
 
-This scans, queues tasks, and reports — without touching git or making any LLM calls past the scan. Use it to verify the scanner picks up what you expect.
+This scans and reports without executing tasks, calling a model, or changing git. The scanner does run the target repository's test, typecheck, and search commands, so it is not a no-op. Use it to verify the scanner picks up what you expect.
 
 ## 6. Run a real grind (small budget)
 
 ```bash
-pnpm --filter asil-runners auto grind --max-tasks 3 --skip dependency-update,documentation
+pnpm --filter asil-runners auto grind --max-tasks 3 --skip dependency-update,documentation --apply
 ```
 
 The runner will:
 
 1. Scan and queue tasks
 2. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage
-3. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard, open PR
+3. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard, then commit locally. `--apply` also pushes and opens a pull request.
 4. Print a summary with cost spent and PRs opened
 
 ## 7. Inspect the spend
