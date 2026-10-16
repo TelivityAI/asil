@@ -51,6 +51,11 @@ export {
   type FileBlock,
   type FileFetcher,
 } from './executor.js';
+export {
+  loadSkillMarkdown,
+  skillCandidatePaths,
+  SKILL_NAME_ALIASES,
+} from './skill-loader.js';
 export { selfReview } from './self-review.js';
 export {
   adversarialReview,
@@ -98,5 +103,6 @@ export type {
   TestFailure,
   TypeError as ScannerTypeError,
 } from './language-profile.js';
+export { isInsideRoot, resolveConfiguredPath } from './paths.js';
 export { typescriptProfile } from './profiles/typescript.js';
 export { pythonProfile } from './profiles/python.js';

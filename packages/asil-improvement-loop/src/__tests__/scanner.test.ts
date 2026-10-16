@@ -45,7 +45,7 @@ describe('scanner', () => {
     });
   });
 
-  describe('toRepoRelative (Codex #3)', () => {
+  describe('toRepoRelative', () => {
     it('strips a repoRoot prefix to yield a repo-relative path', () => {
       expect(toRepoRelative('/repo', '/repo/src/foo.ts')).toBe('src/foo.ts');
       expect(toRepoRelative('/repo/', '/repo/src/foo.ts')).toBe('src/foo.ts');
@@ -54,8 +54,9 @@ describe('scanner', () => {
       expect(toRepoRelative('/repo', 'src/foo.ts')).toBe('src/foo.ts');
       expect(toRepoRelative('/repo', './src/foo.ts')).toBe('src/foo.ts');
     });
-    it('leaves paths outside repoRoot unchanged', () => {
-      expect(toRepoRelative('/repo', '/other/x.ts')).toBe('/other/x.ts');
+    it('drops paths outside repoRoot and parent traversals', () => {
+      expect(toRepoRelative('/repo', '/other/x.ts')).toBeNull();
+      expect(toRepoRelative('/repo', '../etc/passwd')).toBeNull();
     });
   });
 
@@ -130,7 +131,7 @@ describe('scanner', () => {
       // pnpm-recursive output prefixes every line with `<pkg> <script>: `.
       // Without the strip, the file path used to capture as e.g.
       // "apps/api typecheck: src/database/database.module.ts" — a path
-      // no executor could satisfy. Refs github.com/telivity-otaip/asil#1.
+      // no executor could satisfy. See issue #1.
       const tscOut = [
         'apps/api typecheck: src/database/database.module.ts(5,1): error TS2307: Cannot find module \'@x/db\'.',
         'apps/api typecheck: src/foo.ts(10,2): error TS2322: Type string is not assignable to number.',
@@ -236,6 +237,7 @@ describe('scanner', () => {
         total: { branches: { pct: 90 } },
         '/repo/src/foo.ts': { branches: { pct: 45 } },
         '/repo/src/bar.ts': { branches: { pct: 85 } },
+        '/other/outside.ts': { branches: { pct: 10 } },
       });
       const tasks = await scanCoverageGaps('/repo', {
         runner: mockRunner([]),

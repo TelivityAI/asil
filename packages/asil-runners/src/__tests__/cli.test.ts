@@ -4,8 +4,11 @@
  * point of this test is the routing and error-handling at the CLI
  * layer: unknown commands, missing args, help, and the `status` view.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { runCli } from '../cli.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { runCli, workspaceEnvPath } from '../cli.js';
 
 function mkIO(): {
   log: ReturnType<typeof vi.fn>;
@@ -22,6 +25,21 @@ function mkIO(): {
     err: () => error.mock.calls.map((c) => String(c[0] ?? '')).join('\n'),
   };
 }
+
+describe('workspaceEnvPath', () => {
+  let dir: string;
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('loads the .env next to pnpm-workspace.yaml, not a nested package .env', () => {
+    dir = mkdtempSync(join(tmpdir(), 'asil-env-'));
+    const nested = join(dir, 'packages', 'asil-runners', 'src');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY=from-root\n');
+    writeFileSync(join(dir, 'packages', '.env'), 'ANTHROPIC_API_KEY=from-packages\n');
+    expect(workspaceEnvPath(nested)).toBe(join(dir, '.env'));
+  });
+});
 
 describe('runCli', () => {
   it('no args → prints help and exits 0', async () => {

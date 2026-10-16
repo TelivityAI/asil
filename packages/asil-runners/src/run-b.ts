@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { resolveConfiguredPath } from 'asil-improvement-loop';
 import { DEFAULT_CONFIG, runPapa } from 'asil-thought-multiplier';
 import type { UserRequest } from 'asil-thought-multiplier';
 import {
@@ -69,8 +70,10 @@ export async function main(): Promise<void> {
 
   const config = {
     ...DEFAULT_CONFIG,
-    markdownSkillsPath:
-      process.env.ASIL_SKILLS_PATH ?? resolve(env.REPO_ROOT, '.asil', 'skills'),
+    markdownSkillsPath: resolveConfiguredPath(
+      env.REPO_ROOT,
+      process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
+    ),
   };
 
   const result = await runPapa(request, llm, checkpoint, config);

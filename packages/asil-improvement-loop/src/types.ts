@@ -26,6 +26,10 @@ export const CATEGORY_PRIORITY: Record<TaskCategory, number> = {
   documentation: 8,
 };
 
+/**
+ * Category → skill basename. `loadSkillMarkdown` also tries aliases and
+ * both `{name}.md` and `{name}/SKILL.md` under the configured skills path.
+ */
 export const CATEGORY_SKILL_MAP: Record<TaskCategory, string> = {
   'test-failure': 'test-coverage-improvement',
   'type-error': 'code-simplification',
@@ -162,6 +166,7 @@ export interface AdversarialReviewResult {
 
 export type TaskOutcomeStatus =
   | 'pr-opened'
+  | 'publish-skipped'
   | 'rejected-self-review'
   | 'rejected-adversarial'
   | 'execution-failed'
@@ -211,6 +216,14 @@ export interface ImprovementLoopConfig {
     model: string;
   };
   canaryGate?: CanaryGateConfig;
+  /**
+   * When false, a task that passes every gate is not committed, pushed,
+   * or opened as a pull request. The task stays queued so a later run
+   * with publishing enabled can do that work. Defaults to true so
+   * existing programmatic callers keep publishing. The CLI sets this
+   * from `--apply`.
+   */
+  openPullRequests?: boolean;
 }
 
 /** Shared LLM caller contract — same shape as System B uses. */

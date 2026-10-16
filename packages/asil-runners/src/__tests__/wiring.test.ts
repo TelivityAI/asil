@@ -19,6 +19,7 @@ import {
   createFileFetcher,
   createFileReader,
   createGitOps,
+  gitOpsEnv,
   createOpenAICompatibleCaller,
   createOpenAICompatibleCodexCaller,
   loadEnv,
@@ -475,6 +476,30 @@ describe('wiring', () => {
     });
   });
 
+  describe('gitOpsEnv', () => {
+    it('keeps git and GitHub credentials and drops model API keys', () => {
+      const out = gitOpsEnv({
+        PATH: '/usr/bin',
+        HOME: '/home/x',
+        LANG: 'C',
+        GIT_AUTHOR_NAME: 'A',
+        GH_TOKEN: 'gho_token',
+        GITHUB_TOKEN: 'ghp_token',
+        ANTHROPIC_API_KEY: 'sk-ant-secret',
+        OPENAI_API_KEY: 'sk-oai-secret',
+        AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      });
+      expect(out.PATH).toBe('/usr/bin');
+      expect(out.HOME).toBe('/home/x');
+      expect(out.GIT_AUTHOR_NAME).toBe('A');
+      expect(out.GH_TOKEN).toBe('gho_token');
+      expect(out.GITHUB_TOKEN).toBe('ghp_token');
+      expect(out.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(out.OPENAI_API_KEY).toBeUndefined();
+      expect(out.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    });
+  });
+
   describe('createCommandRunner', () => {
     it('captures stdout and exitCode=0 for a successful command', async () => {
       const runner = createCommandRunner();
@@ -560,6 +585,15 @@ describe('wiring', () => {
       );
       expect(content).toMatch(/createAnthropicCaller/);
     });
+
+    it('refuses absolute paths and paths that leave the repository', async () => {
+      const fetcher = createFileFetcher();
+      const root = resolve(__dirname, '..', '..');
+      await expect(fetcher.read('/etc/passwd', root)).rejects.toThrow(/outside the repository/);
+      await expect(fetcher.read('../../etc/passwd', root)).rejects.toThrow(
+        /outside the repository/,
+      );
+    });
   });
 
   describe('createDiffApplier', () => {
@@ -567,6 +601,18 @@ describe('wiring', () => {
       const diff = createDiffApplier();
       expect(typeof diff.apply).toBe('function');
       expect(typeof diff.revert).toBe('function');
+    });
+
+    it('does not write the patch file into the working tree', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'asil-diff-'));
+      try {
+        const diff = createDiffApplier();
+        await diff.apply('not a diff', dir);
+        expect(existsSync(join(dir, '.tmp-auto-diff.patch'))).toBe(false);
+        expect(existsSync(join(dir, '.tmp-pr-diff.patch'))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -597,7 +643,7 @@ describe('wiring', () => {
       };
       const git = createGitOps('/repo', runner);
       const path = await git.createBranch('auto/test-failure/abc12345');
-      expect(path).toMatch(/asil-auto-auto-test-failure-abc12345/);
+      expect(path).toMatch(/asil-auto-[0-9a-f]{12}-auto-test-failure-abc12345/);
       expect(calls.some((c) => c.args.includes('clone'))).toBe(false);
     });
 
@@ -751,7 +797,7 @@ describe('wiring', () => {
       };
       const git = createGitOps('/repo', runner);
       const path = await git.createBranch('auto/test-failure/abc12345');
-      expect(path).toMatch(/asil-auto-auto-test-failure-abc12345/);
+      expect(path).toMatch(/asil-auto-[0-9a-f]{12}-auto-test-failure-abc12345/);
       // Clone fallback actually ran.
       const cloneCall = calls.find((c) => c.args[0] === 'clone');
       expect(cloneCall).toBeDefined();
@@ -793,6 +839,74 @@ describe('wiring', () => {
         /both 'git worktree add' and 'git clone' failed/,
       );
     });
+
+    it('commits with hooks disabled', async () => {
+      const calls: string[][] = [];
+      const runner = {
+        async run(_cmd: string, args: string[]) {
+          calls.push(args);
+          if (args[0] === 'rev-parse') {
+            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      const git = createGitOps('/repo', runner);
+      await git.commit('auto(type-error): fix', '/tmp/work');
+      const commit = calls.find((args) => args.includes('commit'));
+      expect(commit).toEqual([
+        '-c',
+        'core.hooksPath=/dev/null',
+        'commit',
+        '--no-verify',
+        '-m',
+        'auto(type-error): fix',
+      ]);
+    });
+
+    it('writes the pull request body under the temp directory', async () => {
+      const calls: Array<{ cmd: string; args: string[] }> = [];
+      const runner = {
+        async run(cmd: string, args: string[]) {
+          calls.push({ cmd, args });
+          if (args[0] === 'rev-parse') {
+            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
+          }
+          return { stdout: 'https://example.com/pull/1\n', stderr: '', exitCode: 0 };
+        },
+      };
+      const git = createGitOps('/repo', runner);
+      await git.createPR({
+        title: 't',
+        body: 'hello',
+        branch: 'auto/x/y',
+        base: 'main',
+      });
+      const gh = calls.find((c) => c.cmd === 'gh');
+      const bodyFile = gh?.args[gh.args.indexOf('--body-file') + 1] ?? '';
+      expect(bodyFile.startsWith(tmpdir())).toBe(true);
+      expect(bodyFile.includes(`${join('repo', '.tmp-pr-body.md')}`)).toBe(false);
+      expect(existsSync(resolve('/repo', '.tmp-pr-body.md'))).toBe(false);
+    });
+
+    it('refuses to delete a path that is not this repository worktree', async () => {
+      const calls: Array<{ cmd: string; args: string[] }> = [];
+      const runner = {
+        async run(cmd: string, args: string[]) {
+          calls.push({ cmd, args });
+          if (args[0] === 'rev-parse') {
+            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      const git = createGitOps('/repo', runner);
+      await git.cleanup('/etc');
+      expect(calls.some((c) => c.cmd === 'rm')).toBe(false);
+      expect(calls.some((c) => c.args[0] === 'worktree' && c.args[1] === 'remove')).toBe(
+        false,
+      );
+    });
   });
 
   describe('createCostInfra', () => {
@@ -825,6 +939,11 @@ describe('wiring', () => {
       const infra = createCostInfra(dir);
       expect(existsSync(join(dir, 'custom', 'spend'))).toBe(true);
       expect(infra.dataDir).toBe(join(dir, 'custom', 'spend'));
+    });
+
+    it('rejects a relative ASIL_USAGE_DATA_DIR that leaves the repository', () => {
+      process.env.ASIL_USAGE_DATA_DIR = '../outside-repo';
+      expect(() => createCostInfra(dir)).toThrow(/outside the repository/);
     });
 
     it('honours ASIL_USAGE_DATA_DIR when set to an absolute path', () => {

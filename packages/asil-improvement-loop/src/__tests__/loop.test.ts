@@ -149,6 +149,59 @@ describe('runLoop — integration', () => {
     expect(result.outcomes[0]?.totalTokenUsage.outputTokens).toBeGreaterThan(100);
   });
 
+  it('does not push or open a pull request when openPullRequests is false', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-local' }));
+
+    const git = mockGit('https://example.com/pr/9');
+    const result = await runLoop(cfg({ openPullRequests: false }), {
+      llm: goodLLM(),
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git,
+      tracker,
+      budgetManager,
+      runner: goodRunner(),
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(result.prsOpened).toBe(0);
+    expect(result.outcomes[0]?.status).toBe('publish-skipped');
+    expect(git.operations.some((op) => op.startsWith('commit:'))).toBe(false);
+    expect(git.operations.some((op) => op.startsWith('push:'))).toBe(false);
+    expect(git.operations.some((op) => op.startsWith('createPR:'))).toBe(false);
+    const again = queue.dequeue();
+    expect(again?.task.id).toBe('t-local');
+    expect(again?.attempts).toBe(1);
+  });
+
+  it('pushes and opens a pull request when openPullRequests is true', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-publish' }));
+
+    const git = mockGit('https://example.com/pr/10');
+    const result = await runLoop(cfg({ openPullRequests: true }), {
+      llm: goodLLM(),
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git,
+      tracker,
+      budgetManager,
+      runner: goodRunner(),
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(result.outcomes[0]?.status).toBe('pr-opened');
+    expect(git.operations.some((op) => op.startsWith('push:'))).toBe(true);
+    expect(git.operations.some((op) => op.startsWith('createPR:'))).toBe(true);
+  });
+
   it('installs target-repo deps with --ignore-scripts by default (Codex #1 — no lifecycle-script RCE)', async () => {
     const queue = new TaskQueue(queuePath);
     queue.enqueue(mkTask({ id: 't-ignore-scripts' }));

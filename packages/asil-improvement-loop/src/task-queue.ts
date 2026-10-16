@@ -131,6 +131,19 @@ export class TaskQueue {
     return next;
   }
 
+  /**
+   * Return a running task to the queue without consuming the attempt
+   * `dequeue` just recorded. Used when a run verifies a task but does
+   * not publish it.
+   */
+  release(taskId: string): void {
+    const item = this.items.find((i) => i.task.id === taskId);
+    if (!item) return;
+    item.status = 'queued';
+    item.attempts = Math.max(0, item.attempts - 1);
+    this.persist();
+  }
+
   complete(
     taskId: string,
     status: QueueStatus,

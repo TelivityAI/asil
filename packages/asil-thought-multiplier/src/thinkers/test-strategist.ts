@@ -19,7 +19,7 @@ export function runTestStrategist(
     'test-strategist',
     {
       label: 'Test Strategist',
-      skillFile: 'testing-strategy.md',
+      skillFile: 'test-driven-development.md',
       fallbackInstructions: FALLBACK,
     },
     request,

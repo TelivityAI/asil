@@ -7,7 +7,7 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   EventSink,
   instrumentCodexCaller,
@@ -21,6 +21,7 @@ import {
   createDomainAnswerStore,
   findDomainQuestions,
   pythonProfile,
+  resolveConfiguredPath,
   runLoop,
   scanCodebase,
   typescriptProfile,
@@ -50,6 +51,8 @@ interface Flags {
   maxTasks: number;
   skipCategories: TaskCategory[];
   dryRun: boolean;
+  /** Push the branch and open a pull request. Off unless --apply is passed. */
+  apply: boolean;
   skipQuestions: boolean;
   /** Directory to write per-task transcripts + findings.md. When set, the
    *  LLM/Codex callers and budget manager are wrapped to capture every
@@ -69,11 +72,12 @@ function resolveProfile(name: 'ts' | 'python'): LanguageProfile {
   return name === 'python' ? pythonProfile : typescriptProfile;
 }
 
-function parseFlags(argv: readonly string[]): Flags | null {
+export function parseFlags(argv: readonly string[]): Flags | null {
   const flags: Flags = {
     maxTasks: 5,
     skipCategories: [],
     dryRun: false,
+    apply: false,
     skipQuestions: false,
     transcriptsDir: null,
     profile: 'ts',
@@ -92,11 +96,12 @@ function parseFlags(argv: readonly string[]): Flags | null {
       i += 1;
     } else if (a === '--dry-run') {
       flags.dryRun = true;
+    } else if (a === '--apply') {
+      flags.apply = true;
     } else if (a === '--skip-questions') {
       flags.skipQuestions = true;
     } else if (a === '--transcripts' && argv[i + 1]) {
-      const raw = argv[i + 1]!;
-      flags.transcriptsDir = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+      flags.transcriptsDir = argv[i + 1]!;
       i += 1;
     } else if (a === '--profile' && argv[i + 1]) {
       const v = argv[i + 1]!;
@@ -131,6 +136,9 @@ Options:
   --max-tasks N       Max tasks per run (default: 5)
   --skip cat1,cat2    Skip categories (e.g. dependency-update,documentation)
   --dry-run           Scan and report tasks without executing
+  --apply             Push passing changes and open a pull request.
+                      Without this flag the loop still runs the gates, then
+                      stops before commit, push, and pull request creation.
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
   --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
@@ -155,10 +163,13 @@ export async function main(): Promise<void> {
   }
 
   const env = loadEnv();
+  if (flags.transcriptsDir) {
+    flags.transcriptsDir = resolveConfiguredPath(env.REPO_ROOT, flags.transcriptsDir);
+  }
 
-  // pnpm --filter changes cwd to the package dir (autonomous/runners/).
-  // Resolve the actual git repo root so scanner paths, config paths, and
-  // worktree paths all agree on what "relative to repo root" means.
+  // pnpm --filter changes the working directory to the package directory.
+  // Resolve the actual git repository root so scanner paths, config paths,
+  // and worktree paths agree on what "relative to the repository root" means.
   try {
     env.REPO_ROOT = execSync('git rev-parse --show-toplevel', {
       cwd: env.REPO_ROOT,
@@ -174,13 +185,13 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // The loop's runner executes UNTRUSTED target-repo code (pnpm
+  // The loop's runner executes untrusted target-repo code (pnpm
   // install/build/test, tsc, grep) inside worktrees. Strip secrets from
-  // its environment so a malicious postinstall/build/test script can't
-  // exfiltrate ANTHROPIC_API_KEY / OPENAI_API_KEY / git tokens. The LLM
-  // callers hold their keys in THIS process (read at construction), so
-  // they're unaffected. GitOps (push / gh pr create) uses its own
-  // full-env runner — credential separation. (Codex review #1, Level 1.)
+  // its environment so a malicious postinstall, build, or test script
+  // cannot exfiltrate ANTHROPIC_API_KEY, OPENAI_API_KEY, or git tokens.
+  // The LLM callers hold their keys in this process (read at
+  // construction), so they are unaffected. Git and gh use a separate
+  // allowlisted environment.
   const runner = createCommandRunner({ env: scrubbedEnv() });
   const fileReader = createFileReader();
 
@@ -191,7 +202,10 @@ export async function main(): Promise<void> {
   );
   console.log(`   Min severity: ${flags.minSeverity}`);
   console.log(`   Order: ${flags.roundRobin ? 'round-robin' : 'priority'}`);
-  console.log(`   Dry run: ${flags.dryRun}\n`);
+  console.log(`   Dry run: ${flags.dryRun}`);
+  console.log(
+    `   Publish: ${flags.apply ? 'push and open a pull request' : 'off (pass --apply to publish)'}\n`,
+  );
 
   const profile = resolveProfile(flags.profile);
 
@@ -298,15 +312,19 @@ export async function main(): Promise<void> {
     maxTasksPerRun: flags.maxTasks,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    markdownSkillsPath:
-      process.env.ASIL_SKILLS_PATH ?? resolve(env.REPO_ROOT, '.asil', 'skills'),
+    markdownSkillsPath: resolveConfiguredPath(
+      env.REPO_ROOT,
+      process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
+    ),
     repoRoot: env.REPO_ROOT,
-    queuePath:
-      process.env.ASIL_QUEUE_PATH ??
-      resolve(env.REPO_ROOT, '.asil', 'usage-data', 'queue.json'),
+    queuePath: resolveConfiguredPath(
+      env.REPO_ROOT,
+      process.env.ASIL_QUEUE_PATH ?? '.asil/usage-data/queue.json',
+    ),
     skipCategories: flags.skipCategories,
     minSeverity: flags.minSeverity,
     dequeueMode: flags.roundRobin ? 'round-robin' : 'priority',
+    openPullRequests: flags.apply,
     codexConfig: {
       apiKey: 'OPENAI_API_KEY',
       model: 'gpt-4o',
@@ -409,6 +427,16 @@ export async function main(): Promise<void> {
   console.log(`   Budget exhausted: ${result.budgetExhausted}`);
   console.log(`   Cycles detected: ${result.cyclesDetected}`);
 
+  const held = result.outcomes.filter((o) => o.status === 'publish-skipped');
+  if (held.length > 0) {
+    console.log('\nVerified, not published:');
+    for (const outcome of held) {
+      console.log(
+        `   ${outcome.taskId} — re-run with --apply to push and open a pull request`,
+      );
+    }
+  }
+
   const prs = result.outcomes.filter((o) => o.status === 'pr-opened');
   if (prs.length > 0) {
     console.log('\n🎉 PRs opened:');
@@ -439,7 +467,12 @@ export async function main(): Promise<void> {
   // failed rather than just a count. The verbose executor + loop
   // logging prints the full error at the moment it happens; this is
   // the end-of-run summary view.
-  const failed = result.outcomes.filter((o) => o.status !== 'pr-opened' && o.status !== 'cycle-skipped');
+  const failed = result.outcomes.filter(
+    (o) =>
+      o.status !== 'pr-opened' &&
+      o.status !== 'publish-skipped' &&
+      o.status !== 'cycle-skipped',
+  );
   if (failed.length > 0) {
     console.log('\n⚠️  Failure detail:');
     const { TaskQueue } = await import('asil-improvement-loop');

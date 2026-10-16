@@ -16,6 +16,6 @@ dist/
 *.log
 coverage/
 
-# Internal/private review + design notes — kept in private KB, never in the public repo
+# Local review notes. Do not commit.
 CODEX_REVIEW.md
 docs/design/

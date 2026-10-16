@@ -116,6 +116,10 @@ export async function runLoop(
   const outcomes: TaskOutcome[] = [];
   let cyclesDetected = 0;
   let budgetExhausted = false;
+  // Tasks verified but not published. They are ineligible for the rest
+  // of this run, then returned to the queue so --apply can publish them
+  // later without consuming an attempt.
+  const deferredPublish: string[] = [];
 
   // 1. Scan for new tasks. Scanning reads the real repo — it's
   //    read-only, so no worktree needed here.
@@ -457,7 +461,33 @@ export async function runLoop(
         break;
       }
 
-      // 7. All gates passed — commit + push from the worktree + open PR.
+      // 7. All gates passed. Publish only when the caller opted in.
+      //    Otherwise leave the task queued. The worktree is removed in
+      //    `finally`, and a later run with --apply can commit and push.
+      if (config.openPullRequests === false) {
+        console.error(
+          `[loop] Gates passed for ${task.id}. No pull request opened. Re-run with --apply to push and open a pull request.`,
+        );
+        checkpoint.complete();
+        queue.complete(task.id, 'skipped', 'Awaiting --apply');
+        deferredPublish.push(task.id);
+        outcomes.push({
+          taskId: task.id,
+          status: 'publish-skipped',
+          selfReview: review,
+          adversarialReview: adversarial,
+          totalTokenUsage: { ...taskTokens },
+          completedAt: new Date(),
+          prBranch: branchNameFor(task),
+        });
+        if (config.taskCooldownMs > 0 && i < config.maxTasksPerRun - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, config.taskCooldownMs),
+          );
+        }
+        continue;
+      }
+
       const outcome = await buildAndOpenPR(
         task,
         execution,
@@ -530,6 +560,8 @@ export async function runLoop(
       }
     }
   }
+
+  for (const id of deferredPublish) queue.release(id);
 
   return {
     tasksProcessed: outcomes.length,
