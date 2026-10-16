@@ -52,7 +52,7 @@ mkdir -p .asil/skills
 # Copy or symlink the skill files you want. A minimal install is fine.
 ```
 
-Override the location with `ASIL_SKILLS_PATH`. A relative value must stay inside the repository. An absolute value is used as given.
+Override the location with `ASIL_SKILLS_PATH`. A relative value must stay inside the repository. An absolute value is used as given, unless it contains `..` and resolves outside the repository.
 
 ## 4. Run System B (Thought Multiplier) standalone
 

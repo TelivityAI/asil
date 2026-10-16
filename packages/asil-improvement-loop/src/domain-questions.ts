@@ -272,7 +272,9 @@ export function buildDomainAnswerContext(
 
 /** Convenience factory used by the runner. Path defaults to
  *  `<repoRoot>/.asil/domain-answers.json`, overridable via the
- *  `ASIL_DOMAIN_ANSWERS_PATH` env var (absolute or repoRoot-relative). */
+ *  `ASIL_DOMAIN_ANSWERS_PATH` env var. A relative path must stay inside
+ *  the repository. An absolute path is used as given unless a `..`
+ *  segment resolves outside the repository. */
 export function createDomainAnswerStore(repoRoot: string): DomainAnswerStore {
   const configured = process.env.ASIL_DOMAIN_ANSWERS_PATH ?? '.asil/domain-answers.json';
   const path = resolveConfiguredPath(repoRoot, configured);

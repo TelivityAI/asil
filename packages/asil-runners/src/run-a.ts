@@ -167,9 +167,9 @@ export async function main(): Promise<void> {
     flags.transcriptsDir = resolveConfiguredPath(env.REPO_ROOT, flags.transcriptsDir);
   }
 
-  // pnpm --filter changes cwd to the package dir (autonomous/runners/).
-  // Resolve the actual git repo root so scanner paths, config paths, and
-  // worktree paths all agree on what "relative to repo root" means.
+  // pnpm --filter changes the working directory to the package directory.
+  // Resolve the actual git repository root so scanner paths, config paths,
+  // and worktree paths agree on what "relative to the repository root" means.
   try {
     env.REPO_ROOT = execSync('git rev-parse --show-toplevel', {
       cwd: env.REPO_ROOT,
@@ -185,13 +185,13 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // The loop's runner executes UNTRUSTED target-repo code (pnpm
+  // The loop's runner executes untrusted target-repo code (pnpm
   // install/build/test, tsc, grep) inside worktrees. Strip secrets from
-  // its environment so a malicious postinstall/build/test script can't
-  // exfiltrate ANTHROPIC_API_KEY / OPENAI_API_KEY / git tokens. The LLM
-  // callers hold their keys in THIS process (read at construction), so
-  // they're unaffected. GitOps (push / gh pr create) uses its own
-  // full-env runner — credential separation. (Codex review #1, Level 1.)
+  // its environment so a malicious postinstall, build, or test script
+  // cannot exfiltrate ANTHROPIC_API_KEY, OPENAI_API_KEY, or git tokens.
+  // The LLM callers hold their keys in this process (read at
+  // construction), so they are unaffected. Git and gh use a separate
+  // allowlisted environment.
   const runner = createCommandRunner({ env: scrubbedEnv() });
   const fileReader = createFileReader();
 

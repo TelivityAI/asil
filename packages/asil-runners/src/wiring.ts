@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -322,10 +323,10 @@ export function createOpenAICompatibleCodexCaller(
 
 export interface CommandRunnerOptions {
   /** Complete environment for spawned commands. When set, replaces the
-   *  inherited process env entirely — used to keep secrets out of the
-   *  environment of untrusted target-repo commands (install/build/test).
-   *  Leave undefined to inherit the full parent env (the privileged
-   *  runner used for git/gh operations). (Codex review #1, Level 1.) */
+   *  inherited process env entirely. Untrusted target-repo commands pass
+   *  a scrubbed environment. Git and gh pass an allowlisted environment.
+   *  Leave undefined only when the caller intentionally inherits the
+   *  parent process environment. */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -583,11 +584,11 @@ export function createGitOps(
 ): GitOperations {
   const runner = injectedRunner ?? createCommandRunner({ env: gitOpsEnv() });
 
-  // `seedPath` is wherever the CLI was invoked from — it may be a
-  // subdirectory (e.g. `autonomous/runners/`) rather than the repo
-  // root. Resolve the true git top-level via `git rev-parse` so
-  // worktree/clone operations always target the real repo. Lazy +
-  // cached — first method call pays the lookup cost.
+  // `seedPath` is wherever the CLI was invoked from. It may be a
+  // subdirectory rather than the repository root. Resolve the true git
+  // top-level via `git rev-parse` so worktree and clone operations
+  // always target the real repository. Lazy and cached — the first
+  // method call pays the lookup cost.
   let resolvedRoot: string | null = null;
   const gitRoot = async (): Promise<string> => {
     if (resolvedRoot) return resolvedRoot;
@@ -797,8 +798,8 @@ export function createGitOps(
       const repoRoot = await gitRoot();
       const bodyDir = mkdtempSync(join(tmpdir(), 'asil-pr-'));
       const bodyFile = join(bodyDir, 'body.md');
-      writeFileSync(bodyFile, body, 'utf8');
       try {
+        writeFileSync(bodyFile, body, 'utf8');
         const { stdout, stderr, exitCode } = await runner.run(
           'gh',
           [
@@ -832,7 +833,7 @@ export function createGitOps(
         }
         return stdout.trim().split(/\r?\n/).pop() ?? '';
       } finally {
-        if (existsSync(bodyFile)) unlinkSync(bodyFile);
+        rmSync(bodyDir, { recursive: true, force: true });
       }
     },
 

@@ -45,7 +45,7 @@ describe('scanner', () => {
     });
   });
 
-  describe('toRepoRelative (Codex #3)', () => {
+  describe('toRepoRelative', () => {
     it('strips a repoRoot prefix to yield a repo-relative path', () => {
       expect(toRepoRelative('/repo', '/repo/src/foo.ts')).toBe('src/foo.ts');
       expect(toRepoRelative('/repo/', '/repo/src/foo.ts')).toBe('src/foo.ts');
