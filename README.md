@@ -90,19 +90,21 @@ ASIL can run against any HTTP server speaking the OpenAI-compatible `/v1/chat/co
 
 ### Running against untrusted repos — sandbox
 
-ASIL executes target-repo code (`pnpm install`, build, tests) inside disposable worktrees. To keep that safe:
+ASIL executes target-repo commands (`pnpm install`, build, tests, typecheck, and the scanner's search commands) inside a bubblewrap jail. The command can write only its working directory. It gets a private `/tmp` and `HOME`, not the operator's home directory. Network is off, except for `pnpm install` and `npm install`, which need a registry. Install still passes `--ignore-scripts` unless `ASIL_ALLOW_INSTALL_SCRIPTS=1`.
 
-- **Secrets are stripped from the execution environment.** The runner that executes target-repo commands gets a scrubbed env — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and git/GitHub tokens are never in scope, so a malicious `postinstall`/build/test script can't exfiltrate them. Git and `gh` use a separate allowlisted environment that keeps only path, locale, git identity, and the GitHub token those commands need.
-- **Install lifecycle scripts are disabled by default** (`pnpm install --ignore-scripts`). Opt back in with `ASIL_ALLOW_INSTALL_SCRIPTS=1` only for repos you trust.
+`bwrap` must be on `PATH`. If it is missing or cannot start, the command fails. Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution; grind prints a warning and continues.
 
-This is process-level hardening. It removes the credential-exfiltration vector for install, build, and test, and it adds the following limits:
+Git and `gh` stay outside the jail. They use an allowlisted environment with path, locale, git identity, and the GitHub token. Commits set `core.hooksPath` to `/dev/null` and pass `--no-verify`.
 
-- Git and `gh` do not inherit model API keys. Commits set `core.hooksPath` to `/dev/null` and pass `--no-verify`, so hooks in the target repository do not run.
-- Worktrees live under the system temp directory and include a hash of the repository path, so two repositories cannot delete each other's worktrees. Cleanup refuses to delete anything else.
-- Patch file reads stay inside the target repository. Relative paths configured for usage data, the queue, skills, and domain answers cannot climb out of the repository. An absolute path is used as given, unless it contains `..` and resolves outside the repository.
-- `auto grind` does not commit, push, or open a pull request unless you pass `--apply`. Without that flag a task that passes the gates stays queued for a later run.
+Other limits:
 
-It does **not** sandbox the filesystem or network. A hostile repository's build or test can still read local files or make network calls. For an untrusted repository, run ASIL inside a container that does not share your home directory or network.
+- `REPO_ROOT` is required for `auto grind`, including `--dry-run`. It does not default to the current directory.
+- Worktrees live under the system temp directory and include a hash of the repository path. Cleanup refuses to delete anything else.
+- Patch reads stay inside the target repository. Relative paths for usage data, the queue, skills, and domain answers cannot leave the repository. An absolute path is used as given unless it contains `..` and resolves outside the repository.
+- `auto grind` does not commit, push, or open a pull request unless you pass `--apply`. `--apply` updates the loop's `auto/*` branches and opens pull requests. Without that flag a task that passes the gates stays queued.
+- Before scanning, grind prints whether each scanned category loaded a skill file. A missing file uses the built-in instructions. `--require-skills` exits before scanning when any scanned category is missing its skill.
+
+`--dry-run` does not call a model or change git. It still runs the scanner's test, typecheck, and search commands, inside the jail.
 
 ### Languages — Python profile
 
@@ -218,7 +220,8 @@ Every LLM call in B and A flows through a `CostCheckpoint`. Each checkpoint is b
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | env | required | Primary LLM |
 | `OPENAI_API_KEY` | env | required | Adversarial gate (different provider) |
-| `REPO_ROOT` | env | current working directory | Absolute path to the target repo. Set this explicitly. |
+| `REPO_ROOT` | env | required for `auto grind` | Absolute path of the target repository. `think` and `report` still default to the current directory. |
+| `ASIL_SANDBOX` | env | on | Set to `off` to run target-repository commands without bubblewrap. |
 | `ASIL_USAGE_DATA_DIR` | env | `<REPO_ROOT>/.asil/usage-data` | Cost tracker state. Relative values must stay inside the repo. An absolute value is used as given unless `..` leaves the repo. |
 | `ASIL_QUEUE_PATH` | env | `<REPO_ROOT>/.asil/usage-data/queue.json` | Task queue. Same path rules as `ASIL_USAGE_DATA_DIR`. |
 | `ASIL_SKILLS_PATH` | env | `<REPO_ROOT>/.asil/skills` | Markdown skills. Files are `{name}.md` or `{name}/SKILL.md` directly under this directory. Same path rules as `ASIL_USAGE_DATA_DIR`. |

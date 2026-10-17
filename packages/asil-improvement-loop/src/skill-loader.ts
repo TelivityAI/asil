@@ -10,7 +10,7 @@
  * 3. `skills/{name}.md` (older installs that nested a skills/ folder)
  * 4. `skills/{name}/SKILL.md`
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -46,6 +46,15 @@ export function skillCandidatePaths(skillName: string): string[] {
   const paths: string[] = [];
   for (const name of names) paths.push(...layoutsFor(name));
   return paths;
+}
+
+/** Absolute path of the first matching skill file, or null when none exist. */
+export function findSkillFile(skillsPath: string, skillName: string): string | null {
+  for (const rel of skillCandidatePaths(skillName)) {
+    const abs = join(skillsPath, rel);
+    if (existsSync(abs)) return abs;
+  }
+  return null;
 }
 
 /**

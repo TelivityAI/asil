@@ -25,7 +25,7 @@ packages:
 
 ## 2. Set up environment
 
-Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other:
+Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other. `auto grind` refuses to start unless `REPO_ROOT` is set. Target-repository commands run inside bubblewrap (`bwrap` on `PATH`). Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution.
 
 ```
 ANTHROPIC_API_KEY=sk-ant-…
@@ -80,10 +80,11 @@ pnpm --filter asil-runners auto grind --max-tasks 3 --skip dependency-update,doc
 
 The runner will:
 
-1. Scan and queue tasks
-2. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage
-3. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard. `--apply` then commits, pushes, and opens a pull request. Without `--apply` the task stays queued.
-4. Print a summary with cost spent and PRs opened
+1. Print whether each scanned category loaded a skill file. Pass `--require-skills` to stop before scanning when one is missing.
+2. Scan and queue tasks. Scanner commands run inside the jail.
+3. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage
+4. For each task: isolate, execute, typecheck, test, self-review × 3, adversarial gate, domain guard. `--apply` then commits, pushes, and opens a pull request, including updates to the loop's `auto/*` branches. Without `--apply` the task stays queued.
+5. Print a summary with cost spent and PRs opened
 
 ## 7. Inspect the spend
 

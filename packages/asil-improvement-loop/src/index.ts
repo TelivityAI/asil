@@ -19,6 +19,7 @@ export {
   type CycleEvent,
 } from './cycle-detector.js';
 export {
+  SCANNED_CATEGORIES,
   scanCodebase,
   scanTestFailures,
   scanTypeErrors,
@@ -52,6 +53,7 @@ export {
   type FileFetcher,
 } from './executor.js';
 export {
+  findSkillFile,
   loadSkillMarkdown,
   skillCandidatePaths,
   SKILL_NAME_ALIASES,

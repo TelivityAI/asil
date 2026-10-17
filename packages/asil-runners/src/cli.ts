@@ -62,8 +62,11 @@ const HELP = `
     Set ANTHROPIC_API_KEY and OPENAI_API_KEY in the environment or in
     the repository root .env (next to pnpm-workspace.yaml).
     OPENAI_API_KEY is only needed for grind (adversarial gate).
+    REPO_ROOT is required for grind. It does not default to the
+    current directory.
     grind does not commit, push, or open a pull request unless you
-    pass --apply.
+    pass --apply. Target-repository commands run inside bubblewrap
+    unless ASIL_SANDBOX=off.
 `.trimStart();
 
 export async function runCli(
