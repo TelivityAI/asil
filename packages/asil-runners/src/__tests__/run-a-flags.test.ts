@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { formatSkillStatus, parseFlags, skillStatuses } from '../run-a.js';
+import {
+  categoriesToSkip,
+  formatSkillStatus,
+  parseFlags,
+  scanCategoriesFor,
+  skillStatuses,
+} from '../run-a.js';
 
 describe('parseFlags', () => {
   it('does not publish unless --apply is set', () => {
@@ -26,6 +32,30 @@ describe('parseFlags', () => {
   it('requires skills only when --require-skills is set', () => {
     expect(parseFlags([])?.requireSkills).toBe(false);
     expect(parseFlags(['--require-skills'])?.requireSkills).toBe(true);
+  });
+
+  it('defaults to one task and skips test, coverage, and dead-code scanners', () => {
+    const flags = parseFlags([]);
+    expect(flags?.maxTasks).toBe(1);
+    expect(flags?.full).toBe(false);
+    expect(scanCategoriesFor(flags!)).toEqual(['type-error', 'todo-resolution']);
+    expect(categoriesToSkip(flags!)).toEqual([
+      'test-failure',
+      'coverage-gap',
+      'dead-code',
+    ]);
+  });
+
+  it('scans every category when --full is set', () => {
+    const flags = parseFlags(['--full', '--skip', 'dead-code']);
+    expect(scanCategoriesFor(flags!)).toEqual([
+      'test-failure',
+      'type-error',
+      'todo-resolution',
+      'coverage-gap',
+    ]);
+    expect(categoriesToSkip(flags!)).toContain('dead-code');
+    expect(categoriesToSkip(flags!)).not.toContain('test-failure');
   });
 });
 

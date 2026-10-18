@@ -47,14 +47,6 @@ export interface ScannerDeps {
   fs: FileReader;
 }
 
-/**
- * Run every sub-scanner under the given language profile. The profile
- * defines the commands and parsers; this function provides the
- * orchestration (parallel fan-out, task assembly).
- *
- * `profile` defaults to TypeScript for backwards compatibility with
- * callers built before the multi-language refactor.
- */
 /** Categories `scanCodebase` actually runs. */
 export const SCANNED_CATEGORIES = [
   'test-failure',
@@ -64,19 +56,63 @@ export const SCANNED_CATEGORIES = [
   'dead-code',
 ] as const;
 
+/** Default grind scan: a typecheck and a TODO grep. */
+export const FAST_SCAN_CATEGORIES = ['type-error', 'todo-resolution'] as const;
+
+export interface ScanOptions {
+  /** Scanners to run. Defaults to every scanned category. */
+  categories?: readonly string[];
+  /** Run each selected scanner only after the previous one finishes. */
+  sequential?: boolean;
+}
+
+const SCANNER_BY_CATEGORY: Record<
+  (typeof SCANNED_CATEGORIES)[number],
+  (
+    repoRoot: string,
+    deps: ScannerDeps,
+    profile: LanguageProfile,
+  ) => Promise<ImprovementTask[]>
+> = {
+  'test-failure': scanTestFailures,
+  'type-error': scanTypeErrors,
+  'todo-resolution': scanTodos,
+  'coverage-gap': scanCoverageGaps,
+  'dead-code': scanDeadCode,
+};
+
+/**
+ * Run the selected sub-scanners under the given language profile.
+ * The profile defines the commands and parsers. Omitted options run
+ * every scanner at the same time, which existing callers depend on.
+ * Grind passes a short category list and `sequential: true`.
+ *
+ * `profile` defaults to TypeScript for backwards compatibility with
+ * callers built before the multi-language refactor.
+ */
 export async function scanCodebase(
   repoRoot: string,
   deps: ScannerDeps,
   profile: LanguageProfile = typescriptProfile,
+  options: ScanOptions = {},
 ): Promise<ScanResult> {
   const start = Date.now();
-  const results = await Promise.all([
-    scanTestFailures(repoRoot, deps, profile),
-    scanTypeErrors(repoRoot, deps, profile),
-    scanTodos(repoRoot, deps, profile),
-    scanCoverageGaps(repoRoot, deps, profile),
-    scanDeadCode(repoRoot, deps, profile),
-  ]);
+  const selected = (options.categories ?? SCANNED_CATEGORIES).filter(
+    (category): category is (typeof SCANNED_CATEGORIES)[number] =>
+      category in SCANNER_BY_CATEGORY,
+  );
+  const results: ImprovementTask[][] = [];
+  if (options.sequential) {
+    for (const category of selected) {
+      results.push(await SCANNER_BY_CATEGORY[category](repoRoot, deps, profile));
+    }
+  } else {
+    results.push(
+      ...(await Promise.all(
+        selected.map((category) => SCANNER_BY_CATEGORY[category](repoRoot, deps, profile)),
+      )),
+    );
+  }
   return {
     tasks: results.flat(),
     scannedAt: new Date(),
@@ -303,25 +339,42 @@ export async function scanDeadCode(
 
   const isEntryPoint = dc.isEntryPoint ?? isEntryPointFile;
 
-  const tasks: ImprovementTask[] = [];
+  const pending: Array<{ file: string; symbol: string }> = [];
   for (const [file, symbols] of symbolByFile) {
     // Entry-point / barrel files (index.*, __init__.py) are the package's
     // public API. Their consumers can live outside the repo, where the
     // usage grep is blind — so a missing in-repo reference does NOT mean
     // the symbol is dead. Skip them to avoid flagging the whole API surface.
-    // (Codex review #10: dead-code analysis was too shallow to tell public
-    // API from genuinely unreachable code.)
     if (isEntryPoint(file)) continue;
-    const unused: string[] = [];
-    for (const sym of symbols) {
-      const grep = dc.usageGrep(sym, GREP_EXCLUDE_DIRS);
-      const { stdout: usages } = await deps.runner.run(grep.cmd, grep.args, {
-        cwd: repoRoot,
-      });
-      const files = usages.split(/\r?\n/).filter(Boolean);
-      const externalUses = files.filter((f) => normalizePath(f) !== file);
-      if (externalUses.length === 0) unused.push(sym);
+    for (const symbol of symbols) pending.push({ file, symbol });
+  }
+
+  const unusedByFile = new Map<string, string[]>();
+  const USAGE_BATCH = 40;
+  for (let offset = 0; offset < pending.length; offset += USAGE_BATCH) {
+    const batch = pending.slice(offset, offset + USAGE_BATCH);
+    const first = batch[0];
+    if (!first) continue;
+    const sample = dc.usageGrep(first.symbol, GREP_EXCLUDE_DIRS);
+    const pattern = `\\b(?:${batch.map((item) => escapeRegex(item.symbol)).join('|')})\\b`;
+    const args = sample.args.map((arg) =>
+      arg === `\\b${first.symbol}\\b` ? pattern : arg,
+    );
+    const listFlag = args.findIndex((arg) => arg === '-rln' || arg === '-rl' || arg === '-l');
+    if (listFlag >= 0) args[listFlag] = '-rn';
+    const { stdout: usages } = await deps.runner.run(sample.cmd, args, {
+      cwd: repoRoot,
+    });
+    for (const item of batch) {
+      if (symbolUsedOutside(usages, item.symbol, item.file)) continue;
+      const unused = unusedByFile.get(item.file) ?? [];
+      unused.push(item.symbol);
+      unusedByFile.set(item.file, unused);
     }
+  }
+
+  const tasks: ImprovementTask[] = [];
+  for (const [file, unused] of unusedByFile) {
     if (unused.length === 0) continue;
     tasks.push(
       makeTask({
@@ -431,4 +484,30 @@ export function toRepoRelative(repoRoot: string, p: string): string | null {
  */
 export function normalizePath(p: string): string {
   return p.startsWith('./') ? p.slice(2) : p;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when a batched usage grep shows `symbol` outside `definingFile`. */
+function symbolUsedOutside(
+  stdout: string,
+  symbol: string,
+  definingFile: string,
+): boolean {
+  const word = new RegExp(`\\b${escapeRegex(symbol)}\\b`);
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const content = line.match(/^(.+?):(\d+):(.*)$/);
+    if (content) {
+      const file = normalizePath(content[1] ?? '');
+      const body = content[3] ?? '';
+      if (file !== definingFile && word.test(body)) return true;
+      continue;
+    }
+    if (normalizePath(line) !== definingFile) return true;
+  }
+  return false;
 }

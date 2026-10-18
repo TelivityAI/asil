@@ -8,26 +8,22 @@ import type {
 
 /**
  * GitOperations is the git-adjacent surface the autonomous loop depends
- * on. Under worktree isolation:
+ * on. Grind runs inside one scratch clone of the target repository:
  *
- * 1. `createBranch(name)` creates an isolated worktree (a checkout of
- *    `name` rooted under a fresh temp dir). It returns that path. All
- *    file-changing operations for the task happen inside it.
- * 2. `applyDiff` / `commit` / `push` operate on the worktree path — the
- *    user's main checkout is never touched.
+ * 1. `createBranch(name)` checks out `name` inside that clone and
+ *    returns the clone path. It does not write to the checkout the
+ *    operator has open.
+ * 2. `applyDiff` / `commit` / `push` operate on the clone.
  * 3. `createPR` calls `gh pr create` and can run from anywhere.
- * 4. `cleanup(workDir)` MUST be called on every exit path (success,
- *    execution failure, review rejection, PR failure). It removes the
- *    worktree — which both discards any applied diff and frees the
- *    branch from the worktree lock.
+ * 4. `cleanup(workDir)` resets the clone so the next task starts from
+ *    the cloned revision. It does not delete the clone. The process
+ *    removes the clone when it exits.
  *
- * The no-`git reset --hard` rule exists because the loop used to run in
- * the user's live checkout; a hard reset would wipe their uncommitted
- * work. Worktree isolation removes the need entirely — never reintroduce
- * a destructive reset on the main working tree.
+ * Never check out, reset, or delete branches in the operator's open
+ * checkout.
  */
 export interface GitOperations {
-  /** Create an isolated worktree for `name`. Returns the worktree path. */
+  /** Check out `name` inside the scratch clone. Returns the clone path. */
   createBranch(name: string): Promise<string>;
   /** Apply a unified diff in the given working directory. */
   applyDiff(diff: string, workDir: string): Promise<boolean>;
@@ -42,8 +38,19 @@ export interface GitOperations {
     branch: string;
     base: string;
   }): Promise<string>;
-  /** Remove the worktree. Call on EVERY exit path — success or failure. */
+  /** Reset the scratch clone. Call on EVERY exit path — success or failure. */
   cleanup(workDir: string): Promise<void>;
+}
+
+/** Thrown when `origin` already has the branch. Push must not overwrite it. */
+export class RemoteBranchExistsError extends Error {
+  readonly branch: string;
+
+  constructor(branch: string) {
+    super(`origin already has branch ${branch}`);
+    this.name = 'RemoteBranchExistsError';
+    this.branch = branch;
+  }
 }
 
 /** Compose the canonical autonomous branch name for a task. Exposed so
@@ -86,6 +93,22 @@ export async function buildAndOpenPR(
     stage = 'push';
     await git.push(branch, workDir);
   } catch (err) {
+    if (err instanceof RemoteBranchExistsError) {
+      const reason = err.message;
+      console.error(
+        `\n[pr-builder] origin already has ${branch}; skipping push and pull request`,
+      );
+      return {
+        taskId: task.id,
+        status: 'publish-skipped',
+        totalTokenUsage: execution.tokenUsage,
+        completedAt: new Date(),
+        selfReview: self,
+        adversarialReview: adversarial,
+        prBranch: branch,
+        failureReason: reason,
+      } satisfies TaskOutcome;
+    }
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`\n[pr-builder] ✖ ${stage} failed for task ${task.id}`);
     console.error(`             branch:  ${branch}`);

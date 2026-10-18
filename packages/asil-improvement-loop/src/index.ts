@@ -20,6 +20,7 @@ export {
 } from './cycle-detector.js';
 export {
   SCANNED_CATEGORIES,
+  FAST_SCAN_CATEGORIES,
   scanCodebase,
   scanTestFailures,
   scanTypeErrors,
@@ -32,6 +33,7 @@ export {
   stableTaskId,
   toRepoRelative,
   type ScanResult,
+  type ScanOptions,
   type ScannerDeps,
   type CommandRunner,
   type FileReader,
@@ -68,6 +70,7 @@ export {
   buildAndOpenPR,
   buildPRBody,
   branchNameFor,
+  RemoteBranchExistsError,
   type GitOperations,
 } from './pr-builder.js';
 export { runLoop, isBlockedByDomainGuard, type LoopDeps, type LoopResult } from './loop.js';

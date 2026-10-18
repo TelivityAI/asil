@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import {
   BudgetManager,
   CostCheckpoint,
@@ -16,6 +18,7 @@ import {
   type DomainAnswerStore,
 } from './domain-questions.js';
 import { runCanaryGate } from './canary-gate.js';
+import { isInsideRoot } from './paths.js';
 import type {
   CanaryGateResult,
   CodexCaller,
@@ -77,6 +80,40 @@ export interface LoopResult {
   canaryGateResult?: CanaryGateResult;
 }
 
+/**
+ * `pnpm --filter` arguments for the workspace package that contains
+ * `filePath` and defines a `build` script. Null when no such package
+ * exists, so a patch does not trigger a workspace-wide rebuild.
+ */
+export function touchedPackageBuildArgs(
+  repoRoot: string,
+  filePath: string,
+): string[] | null {
+  const root = resolve(repoRoot);
+  let dir = dirname(resolve(root, filePath));
+  while (isInsideRoot(root, dir)) {
+    const manifest = join(dir, 'package.json');
+    if (existsSync(manifest)) {
+      try {
+        const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as {
+          scripts?: { build?: unknown };
+        };
+        if (typeof parsed.scripts?.build === 'string') {
+          if (resolve(dir) === root) return ['run', 'build'];
+          return ['--filter', `./${relative(root, dir)}`, 'run', 'build'];
+        }
+      } catch {
+        // Keep walking when the manifest is not JSON.
+      }
+    }
+    if (resolve(dir) === root) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
 export function isBlockedByDomainGuard(
   filePaths: readonly string[],
   blockedFiles: ReadonlySet<string>,
@@ -121,12 +158,15 @@ export async function runLoop(
   // later without consuming an attempt.
   const deferredPublish: string[] = [];
 
-  // 1. Scan for new tasks. Scanning reads the real repo — it's
-  //    read-only, so no worktree needed here.
+  // 1. Scan for new tasks. Grind points repoRoot at the scratch clone.
   const scan = await scanCodebase(
     config.repoRoot,
     { runner: deps.runner, fs: deps.fileReader },
     deps.profile,
+    {
+      ...(config.scanCategories ? { categories: config.scanCategories } : {}),
+      sequential: config.scanSequential === true,
+    },
   );
   const blocked = deps.blockedFiles ?? new Set<string>();
   for (const task of scan.tasks) {
@@ -135,7 +175,33 @@ export async function runLoop(
     queue.enqueue(task);
   }
 
-  // 2. Process up to maxTasksPerRun.
+  // 2. Install and build once in the clone, before any task runs.
+  //    Later tasks reuse that node_modules. A patch rebuilds only the
+  //    package it edits.
+  const restoreBuild: { args: string[] | null } = { args: null };
+  if (hasRunnableTask(queue, config.skipCategories)) {
+    const boot = await installWorkspace(config.repoRoot, deps.runner);
+    if (!boot.ok) {
+      return {
+        tasksProcessed: 0,
+        outcomes: [
+          {
+            taskId: 'workspace-install',
+            status: 'infra-failed',
+            totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+            completedAt: new Date(),
+            failureReason: boot.reason,
+          },
+        ],
+        prsOpened: 0,
+        rejected: 0,
+        budgetExhausted: false,
+        cyclesDetected: 0,
+      };
+    }
+  }
+
+  // 3. Process up to maxTasksPerRun.
   for (let i = 0; i < config.maxTasksPerRun; i += 1) {
     const item = queue.dequeue();
     if (!item) break;
@@ -191,9 +257,9 @@ export async function runLoop(
       checkpointInterval: budget.checkpointIntervalTokens,
     });
 
-    // 3. Create an isolated worktree for this task. All mutations happen
-    //    inside it; the user's live checkout is never touched. The
-    //    `finally` block guarantees cleanup on every exit path.
+    // 3. Check out this task's branch inside the scratch clone. The
+    //    open checkout is never a git write target. Cleanup resets the
+    //    clone and leaves node_modules in place.
     const branchName = branchNameFor(task);
     let workDir: string;
     try {
@@ -203,18 +269,18 @@ export async function runLoop(
       // are useless when debugging why the grind isn't making progress.
       const msg = err instanceof Error ? err.message : String(err);
       console.error(
-        `\n[loop] ✖ worktree creation failed for task ${task.id} (${task.category})`,
+        `\n[loop] ✖ branch creation failed for task ${task.id} (${task.category})`,
       );
       console.error(`       branch:  ${branchName}`);
       console.error(`       error:   ${msg}`);
       if (err instanceof Error && err.stack) {
         console.error(err.stack);
       }
-      checkpoint.kill('worktree creation failed');
+      checkpoint.kill('branch creation failed');
       queue.complete(
         task.id,
         'failed',
-        `worktree creation failed: ${msg}`,
+        `branch creation failed: ${msg}`,
       );
       outcomes.push({
         taskId: task.id,
@@ -226,58 +292,10 @@ export async function runLoop(
     }
 
     try {
-      // 3b. Install dependencies in the worktree so typecheck + tests work.
-      //     Without this the clone has no node_modules and every tsc/vitest
-      //     call fails with "Cannot find module" errors.
-      // --ignore-scripts by default: a target repo's install lifecycle
-      // scripts (postinstall/prepare) are arbitrary code we should not
-      // run with ASIL's privileges. Opt back in with
-      // ASIL_ALLOW_INSTALL_SCRIPTS=1 for repos that genuinely need them
-      // (the operator then explicitly accepts the risk). (Codex #1.)
-      const allowInstallScripts = process.env.ASIL_ALLOW_INSTALL_SCRIPTS === '1';
-      const installArgs = allowInstallScripts
-        ? ['install', '--frozen-lockfile']
-        : ['install', '--frozen-lockfile', '--ignore-scripts'];
-      const installResult = await deps.runner.run('pnpm', installArgs, {
-        cwd: workDir,
-      });
-      if (installResult.exitCode !== 0) {
-        // Install failure is fatal: with no node_modules, every
-        // downstream typecheck/test runs in a known-bad environment and
-        // would reject good patches for reasons unrelated to the LLM's
-        // work. Abort the task with a distinct infra-failed outcome
-        // rather than patching blind. (A broken *build* is treated
-        // separately below — that can be the very thing being fixed.)
-        const stderr = installResult.stderr.slice(0, 500);
-        console.error(
-          `\n[loop] ✖ pnpm install failed in worktree for task ${task.id} — aborting task (infra failure)`,
-        );
-        console.error(`       stderr: ${stderr}`);
-        checkpoint.kill('pnpm install failed');
-        queue.complete(task.id, 'failed', `pnpm install failed: ${stderr}`);
-        outcomes.push({
-          taskId: task.id,
-          status: 'infra-failed',
-          totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-          completedAt: new Date(),
-          failureReason: `pnpm install failed in worktree: ${stderr}`,
-        });
-        continue;
-      }
-
-      // 3c. Build workspace packages so their dist/ entries are resolvable.
-      //     Without this, vitest can't resolve asil-* imports because
-      //     the packages export from dist/index.js (built by tsup).
-      const buildResult = await deps.runner.run(
-        'pnpm',
-        ['run', '-r', 'build'],
-        { cwd: workDir },
-      );
-      if (buildResult.exitCode !== 0) {
-        console.error(
-          `\n[loop] ✖ pnpm build failed in worktree for task ${task.id}`,
-        );
-        console.error(`       stderr: ${buildResult.stderr.slice(0, 500)}`);
+      // The previous task's package build may still be in dist/. Rebuild
+      // it against the base checkout before this task edits anything.
+      if (restoreBuild.args) {
+        await deps.runner.run('pnpm', restoreBuild.args, { cwd: workDir });
       }
 
       // Pre-build the domain context section for this task. Empty
@@ -286,7 +304,7 @@ export async function runLoop(
         ? buildDomainAnswerContext(task.filePaths, deps.domainAnswerStore)
         : '';
 
-      // 4. Execute inside the worktree.
+      // 4. Execute inside the clone.
       const execution = await executeTask(
         task,
         {
@@ -302,6 +320,18 @@ export async function runLoop(
           markdownSkillsPath: config.markdownSkillsPath,
           model: config.executionModel,
           workDir,
+          onPatchApplied: async (patchedDir, filePath) => {
+            const args = touchedPackageBuildArgs(patchedDir, filePath);
+            if (!args) return;
+            restoreBuild.args = args;
+            const rebuilt = await deps.runner.run('pnpm', args, { cwd: patchedDir });
+            if (rebuilt.exitCode !== 0) {
+              console.error(
+                `\n[loop] ✖ package build failed after patch for task ${task.id}`,
+              );
+              console.error(`       stderr: ${rebuilt.stderr.slice(0, 500)}`);
+            }
+          },
         },
       );
 
@@ -462,11 +492,11 @@ export async function runLoop(
       }
 
       // 7. All gates passed. Publish only when the caller opted in.
-      //    Otherwise leave the task queued. The worktree is removed in
-      //    `finally`, and a later run with --apply can commit and push.
+      //    Otherwise leave the task queued. Cleanup resets the clone,
+      //    and a later run with --apply can commit and push.
       if (config.openPullRequests === false) {
         console.error(
-          `[loop] Gates passed for ${task.id}. No pull request opened. Re-run with --apply to push and open a pull request.`,
+          `[loop] Gates passed for ${task.id}. No pull request opened. Re-run with --apply to push and open a draft pull request.`,
         );
         checkpoint.complete();
         queue.complete(task.id, 'skipped', 'Awaiting --apply');
@@ -509,6 +539,12 @@ export async function runLoop(
         // failure in commit/push/create used to be mis-marked completed.
         queue.complete(task.id, 'completed');
         cycleDetector.record(task.id, task.category, task.filePaths);
+      } else if (outcome.status === 'publish-skipped') {
+        queue.complete(
+          task.id,
+          'skipped',
+          outcome.failureReason ?? 'branch already exists on origin',
+        );
       } else {
         // Use the actual reason captured by buildAndOpenPR (commit/push/
         // gh pr create error message) instead of the generic placeholder.
@@ -549,9 +585,8 @@ export async function runLoop(
         completedAt: new Date(),
       });
     } finally {
-      // Non-negotiable: every exit path tears down the worktree. A
-      // leaked worktree accumulates across runs and eventually breaks
-      // `git worktree add` for the same branch name.
+      // Reset the clone on every exit path. Cleanup must not delete it:
+      // the next task reuses the install. The process removes the clone.
       try {
         await deps.git.cleanup(workDir);
       } catch {
@@ -571,4 +606,39 @@ export async function runLoop(
     budgetExhausted,
     cyclesDetected,
   };
+}
+
+function hasRunnableTask(queue: TaskQueue, skip: readonly string[]): boolean {
+  return queue.snapshot().some(
+    (item) => item.status === 'queued' && !skip.includes(item.task.category),
+  );
+}
+
+async function installWorkspace(
+  repoRoot: string,
+  runner: CommandRunner,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // --ignore-scripts by default: a target repo's install lifecycle
+  // scripts are arbitrary code. Opt back in with
+  // ASIL_ALLOW_INSTALL_SCRIPTS=1 when the repository needs them.
+  const allowInstallScripts = process.env.ASIL_ALLOW_INSTALL_SCRIPTS === '1';
+  const installArgs = allowInstallScripts
+    ? ['install', '--frozen-lockfile']
+    : ['install', '--frozen-lockfile', '--ignore-scripts'];
+  const installResult = await runner.run('pnpm', installArgs, { cwd: repoRoot });
+  if (installResult.exitCode !== 0) {
+    const stderr = installResult.stderr.slice(0, 500);
+    console.error('\n[loop] ✖ pnpm install failed — aborting run (infra failure)');
+    console.error(`       stderr: ${stderr}`);
+    return { ok: false, reason: `pnpm install failed: ${stderr}` };
+  }
+
+  const buildResult = await runner.run('pnpm', ['run', '-r', 'build'], {
+    cwd: repoRoot,
+  });
+  if (buildResult.exitCode !== 0) {
+    console.error('\n[loop] ✖ pnpm build failed in the scratch clone');
+    console.error(`       stderr: ${buildResult.stderr.slice(0, 500)}`);
+  }
+  return { ok: true };
 }

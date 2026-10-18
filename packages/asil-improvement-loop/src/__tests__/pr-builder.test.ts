@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { branchNameFor, buildAndOpenPR, buildPRBody } from '../pr-builder.js';
+import {
+  branchNameFor,
+  buildAndOpenPR,
+  buildPRBody,
+  RemoteBranchExistsError,
+} from '../pr-builder.js';
 import type {
   AdversarialReviewResult,
   ExecutionResult,
@@ -122,6 +127,25 @@ describe('pr-builder', () => {
     expect(git.operations.some((op) => op.startsWith('createBranch:'))).toBe(
       false,
     );
+  });
+
+  it('skips the pull request when the remote branch already exists', async () => {
+    const git = mockGit();
+    const branch = 'auto/test-failure/abcdef12';
+    git.push = async () => {
+      throw new RemoteBranchExistsError(branch);
+    };
+    const outcome = await buildAndOpenPR(
+      mkTask({ id: 'abcdef1234567890', category: 'test-failure' }),
+      execution,
+      self,
+      adversarial,
+      git,
+      '/tmp/wd',
+    );
+    expect(outcome.status).toBe('publish-skipped');
+    expect(outcome.failureReason).toMatch(/already has branch/);
+    expect(git.operations.some((op) => op.startsWith('createPR:'))).toBe(false);
   });
 
   it('returns execution-failed when push throws AND captures the underlying error in failureReason', async () => {

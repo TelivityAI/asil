@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   BudgetManager,
@@ -29,6 +29,7 @@ import type {
   LLMResponse,
 } from 'asil-thought-multiplier';
 import {
+  RemoteBranchExistsError,
   resolveConfiguredPath,
   type CodexCaller,
   type CommandRunner,
@@ -421,6 +422,20 @@ export function worktreePathFor(repoRoot: string, branchName: string): string {
   return resolve(tmpdir(), `asil-auto-${worktreeSlug(repoRoot)}-${safeName}`);
 }
 
+/** Scratch clone for one grind run. Distinct from any editor checkout. */
+export function scratchClonePath(repoRoot: string): string {
+  return resolve(tmpdir(), `asil-scratch-${worktreeSlug(repoRoot)}`);
+}
+
+/** True when `dir` is an ASIL scratch clone under the system temp directory. */
+export function isScratchClone(dir: string): boolean {
+  const abs = resolve(dir);
+  return (
+    dirname(abs) === resolve(tmpdir()) &&
+    /^asil-scratch-[0-9a-f]{12}$/.test(basename(abs))
+  );
+}
+
 /** True when `candidate` is the temp worktree directory for `repoRoot`. */
 export function isDeletableWorktree(workDir: string, repoRoot: string): boolean {
   const abs = resolve(workDir);
@@ -563,20 +578,107 @@ export function createDiffApplier(): DiffApplier {
   };
 }
 
+async function gitTopLevel(
+  runner: CommandRunner,
+  cwd: string,
+): Promise<string> {
+  const res = await runner.run('git', ['rev-parse', '--show-toplevel'], { cwd });
+  const out = res.stdout.trim();
+  if (res.exitCode !== 0 || !out) return resolve(cwd);
+  return out;
+}
+
 /**
- * Real GitOperations for the autonomous loop.
- *
- * Worktree isolation — this implementation NEVER runs a destructive
- * `git reset --hard` on the user's main working tree. Each task gets
- * its own `git worktree` under `os.tmpdir()`; diff application,
- * typecheck, tests, commit, and push all target that worktree. The
- * loop's `finally` block calls `cleanup()` on every exit path to
- * remove the worktree.
- *
- * Why: the user's live checkout may hold uncommitted work, in-progress
- * branches, etc. A destructive reset would wipe those. Worktrees share
- * the underlying `.git` directory (no clone, no copy), so creation and
- * removal are sub-second and nothing on the main tree is touched.
+ * Clone `repoRoot` into `tmpdir()/asil-scratch-<hash>`. Reuse the
+ * directory when it is already a clone of this repository. Fetch is
+ * not required. `origin` is pointed at the source repository's remote.
+ */
+export async function prepareScratchClone(
+  repoRoot: string,
+  injectedRunner?: CommandRunner,
+): Promise<string> {
+  const runner = injectedRunner ?? createCommandRunner({ env: gitOpsEnv() });
+  const source = await gitTopLevel(runner, repoRoot);
+  const dest = scratchClonePath(source);
+
+  if (existsSync(dest)) {
+    const marker = await runner.run(
+      'git',
+      ['config', '--get', 'asil.scratchSource'],
+      { cwd: dest },
+    );
+    const top = await runner.run('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dest,
+    });
+    const sameSource = marker.exitCode === 0 && marker.stdout.trim() === source;
+    const sameTop = top.exitCode === 0 && resolve(top.stdout.trim()) === dest;
+    if (sameSource && sameTop) return dest;
+    if (!isScratchClone(dest)) {
+      throw new Error(`Refusing to replace ${dest}: not an ASIL scratch clone.`);
+    }
+    rmSync(dest, { recursive: true, force: true });
+  }
+
+  const cloneRes = await runner.run(
+    'git',
+    ['clone', '--no-hardlinks', source, dest],
+    { cwd: tmpdir() },
+  );
+  if (cloneRes.exitCode !== 0) {
+    throw new Error(
+      `git clone failed: ${cloneRes.stderr.trim() || cloneRes.stdout.trim()}`,
+    );
+  }
+
+  const originRes = await runner.run(
+    'git',
+    ['config', '--get', 'remote.origin.url'],
+    { cwd: source },
+  );
+  const realOriginUrl = originRes.stdout.trim();
+  if (originRes.exitCode === 0 && realOriginUrl) {
+    const remoteRes = await runner.run(
+      'git',
+      ['remote', 'set-url', 'origin', realOriginUrl],
+      { cwd: dest },
+    );
+    if (remoteRes.exitCode !== 0) {
+      throw new Error(`failed to set origin URL: ${remoteRes.stderr}`);
+    }
+  }
+
+  for (const key of ['user.name', 'user.email'] as const) {
+    const got = await runner.run('git', ['config', '--get', key], { cwd: source });
+    const value = got.stdout.trim();
+    if (got.exitCode === 0 && value) {
+      await runner.run('git', ['config', key, value], { cwd: dest });
+    }
+  }
+
+  const head = await runner.run('git', ['rev-parse', 'HEAD'], { cwd: dest });
+  const base = head.stdout.trim();
+  if (head.exitCode !== 0 || !base) {
+    throw new Error('scratch clone has no HEAD');
+  }
+  await runner.run('git', ['config', 'asil.scratchSource', source], { cwd: dest });
+  await runner.run('git', ['config', 'asil.scratchBase', base], { cwd: dest });
+  return dest;
+}
+
+/** Delete the scratch clone for `repoRoot`, or `dir` when it is already that path. */
+export async function removeScratchClone(repoRootOrDest: string): Promise<void> {
+  const dest = isScratchClone(repoRootOrDest)
+    ? resolve(repoRootOrDest)
+    : scratchClonePath(repoRootOrDest);
+  if (!isScratchClone(dest)) return;
+  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+}
+
+/**
+ * Git operations for a grind run. `seedPath` is the scratch clone from
+ * `prepareScratchClone`. Branch creation checks out inside that clone
+ * only. It does not call `git worktree` or `git branch -D` on the
+ * repository the operator has open.
  */
 export function createGitOps(
   seedPath: string,
@@ -622,120 +724,35 @@ export function createGitOps(
   return {
     async createBranch(name) {
       const repoRoot = await gitRoot();
-
-      // Each branch name maps 1:1 to a worktree path so concurrent
-      // tasks don't collide. Slashes in the branch name (auto/<cat>/<id>)
-      // can't appear in a directory name — swap for dashes.
-      const worktreePath = worktreePathFor(repoRoot, name);
-
-      // Clear the four possible leftover states from a prior crashed run:
-      //   1. Worktree admin record still registered in .git/worktrees/.
-      //   2. Worktree directory on disk (may be from worktree OR clone).
-      //   3. Local branch ref in the main repo (blocks `worktree add -b`).
-      //   4. None of the above (clean — all these no-op harmlessly).
-      // Order matters: prune admin records BEFORE rm -rf so prune sees
-      // the disk entries it's supposed to match. Delete the branch
-      // ref LAST so nothing still references it.
-      await runner.run('git', ['worktree', 'remove', worktreePath, '--force'], {
-        cwd: repoRoot,
-      });
-      await runner.run('git', ['worktree', 'prune'], { cwd: repoRoot });
-      if (existsSync(worktreePath)) {
-        if (!isDeletableWorktree(worktreePath, repoRoot)) {
-          throw new Error(
-            `Refusing to delete ${worktreePath}: not an ASIL worktree for this repository.`,
-          );
-        }
-        await runner.run('rm', ['-rf', worktreePath], { cwd: tmpdir() });
-      }
-      // `git branch -D` is the fix for "fatal: a branch named '<name>'
-      // already exists" on retry after a previous worktree was cleaned
-      // up without its branch ref. Ignore errors — nothing to delete is
-      // the normal case.
-      await runner.run('git', ['branch', '-D', name], { cwd: repoRoot });
-
-      // Prefer `git worktree add` — fast (shared .git dir), clean.
-      const wtResult = await runner.run(
-        'git',
-        ['worktree', 'add', worktreePath, '-b', name],
-        { cwd: repoRoot },
-      );
-      if (wtResult.exitCode === 0) return worktreePath;
-
-      // Fallback: the repo lives on Google Drive / iCloud / a FUSE mount
-      // that can't host worktree admin files. Clone to local tmp
-      // instead. Slower than a worktree but always works.
-      const wtErr = wtResult.stderr.trim() || wtResult.stdout.trim();
-      console.error(
-        `[git] 'git worktree add' failed; falling back to local clone. reason: ${wtErr}`,
-      );
-
-      // Grab the real remote URL from the main repo so push still
-      // targets GitHub (a plain `git clone <repoRoot>` would point
-      // origin at the Drive repo instead).
-      const originRes = await runner.run(
-        'git',
-        ['config', '--get', 'remote.origin.url'],
-        { cwd: repoRoot },
-      );
-      const realOriginUrl = originRes.stdout.trim();
-
-      const cloneRes = await runner.run(
-        'git',
-        ['clone', '--no-hardlinks', repoRoot, worktreePath],
-        { cwd: tmpdir() },
-      );
-      if (cloneRes.exitCode !== 0) {
+      if (!isScratchClone(repoRoot)) {
         throw new Error(
-          `both 'git worktree add' and 'git clone' failed. worktree: ${wtErr}. clone: ${cloneRes.stderr.trim() || cloneRes.stdout.trim()}`,
+          `Refusing to create ${name} in ${repoRoot}. Grind creates branches only inside its scratch clone.`,
         );
       }
-
-      if (realOriginUrl) {
-        const remoteRes = await runner.run(
-          'git',
-          ['remote', 'set-url', 'origin', realOriginUrl],
-          { cwd: worktreePath },
+      const baseRes = await runner.run(
+        'git',
+        ['config', '--get', 'asil.scratchBase'],
+        { cwd: repoRoot },
+      );
+      const base = baseRes.stdout.trim();
+      if (baseRes.exitCode !== 0 || !base) {
+        throw new Error(
+          `scratch clone ${repoRoot} has no asil.scratchBase; refusing to check out ${name}`,
         );
-        if (remoteRes.exitCode !== 0) {
-          throw new Error(
-            `clone fallback: failed to set origin URL: ${remoteRes.stderr}`,
-          );
-        }
       }
-
-      // Propagate git identity from the source repo so `git commit` in
-      // the clone doesn't fail with "Please tell me who you are".
-      // `git clone` inherits the global `~/.gitconfig` only — if the
-      // source repo overrides user.name/user.email per-repo (or the
-      // global is empty), commits in the clone fail. Copy whatever the
-      // source has; ignore failures (commit will surface the real error).
-      for (const key of ['user.name', 'user.email'] as const) {
-        const got = await runner.run('git', ['config', '--get', key], {
-          cwd: repoRoot,
-        });
-        const value = got.stdout.trim();
-        if (got.exitCode === 0 && value) {
-          await runner.run('git', ['config', key, value], { cwd: worktreePath });
-        }
-      }
-
-      // The clone inherits every local branch from the source repo as
-      // an `origin/*` remote-tracking ref. A local branch with the
-      // task name would block `checkout -b` — delete it first
-      // (ignore errors; normal case is nothing to delete).
-      await runner.run('git', ['branch', '-D', name], { cwd: worktreePath });
+      // -B resets the branch to the cloned revision. Every task shares
+      // this directory so node_modules survives from task to task.
       const branchRes = await runner.run(
         'git',
-        ['checkout', '-b', name],
-        { cwd: worktreePath },
+        ['checkout', '-B', name, base],
+        { cwd: repoRoot },
       );
       if (branchRes.exitCode !== 0) {
         throw new Error(
-          `clone fallback: failed to create branch ${name}: ${branchRes.stderr}`,
+          `failed to create branch ${name}: ${branchRes.stderr.trim() || branchRes.stdout.trim()}`,
         );
       }
-      return worktreePath;
+      return repoRoot;
     },
 
     async applyDiff(diff, workDir) {
@@ -770,26 +787,17 @@ export function createGitOps(
     },
 
     async push(branch, workDir) {
-      // Auto/* branches are owned by the loop. If a previous run pushed
-      // a now-stale version of this branch (e.g. crashed before
-      // `gh pr create`), a plain push fails with non-fast-forward. We
-      // need to overwrite — but safely, so a divergent branch from
-      // some other source wouldn't get blasted.
-      //
-      // Strategy: fetch the remote's view first to populate the
-      // tracking ref, then use `--force-with-lease`. The lease passes
-      // when the remote matches what we just fetched (i.e. it's still
-      // a stale auto/* branch, not something modified between fetch
-      // and push). On a brand-new branch with no remote ref, fetch is
-      // a no-op and the push behaves normally.
-      await runner.run('git', ['fetch', 'origin', branch], { cwd: workDir });
-      await mustRunIn(workDir, [
-        'push',
-        '-u',
-        '--force-with-lease',
-        'origin',
-        branch,
-      ]);
+      // A normal push. If origin already has this auto/* branch, skip
+      // the push. Do not force-update a branch the remote already has.
+      const listed = await runner.run(
+        'git',
+        ['ls-remote', '--heads', 'origin', branch],
+        { cwd: workDir },
+      );
+      if (listed.exitCode === 0 && listed.stdout.trim()) {
+        throw new RemoteBranchExistsError(branch);
+      }
+      await mustRunIn(workDir, ['push', '-u', 'origin', branch]);
     },
 
     async createPR({ title, body, branch, base }) {
@@ -809,6 +817,7 @@ export function createGitOps(
             title,
             '--body-file',
             bodyFile,
+            '--draft',
             '--head',
             branch,
             '--base',
@@ -838,22 +847,22 @@ export function createGitOps(
     },
 
     async cleanup(workDir) {
-      // Best-effort — never throw from cleanup. Deletion is limited to
-      // the temp worktree directory for this repository.
+      // Best-effort — never throw from cleanup. Reset the scratch clone
+      // only. node_modules and dist stay so the next task does not
+      // reinstall. The process deletes the clone on exit.
       const repoRoot = await gitRoot();
-      if (!isDeletableWorktree(workDir, repoRoot)) {
+      if (resolve(workDir) !== resolve(repoRoot) || !isScratchClone(repoRoot)) {
         console.error(
-          `[git] Refusing to delete ${workDir}: not an ASIL worktree for this repository.`,
+          `[git] Refusing to reset ${workDir}: not this run's scratch clone.`,
         );
         return;
       }
-      const safe = resolve(workDir);
-      await runner.run('git', ['worktree', 'remove', safe, '--force'], {
-        cwd: repoRoot,
-      });
-      if (existsSync(safe)) {
-        await runner.run('rm', ['-rf', safe], { cwd: tmpdir() });
-      }
+      await runner.run('git', ['reset', '--hard'], { cwd: repoRoot });
+      await runner.run(
+        'git',
+        ['clean', '-fd', '-e', 'node_modules', '-e', '.pnpm-store', '-e', 'dist'],
+        { cwd: repoRoot },
+      );
     },
   };
 }
