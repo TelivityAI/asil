@@ -43,6 +43,9 @@ import {
   createFileFetcher,
   createFileReader,
   createGitOps,
+  prepareScratchClone,
+  removeScratchClone,
+  type EnvConfig,
   createOpenAICompatibleCaller,
   createOpenAICompatibleCodexCaller,
   loadEnv,
@@ -68,6 +71,8 @@ interface Flags {
   roundRobin: boolean;
   /** Exit before scanning when a scanned category has no skill file. */
   requireSkills: boolean;
+  /** Also scan tests, coverage, and dead code. Default is type errors and TODOs. */
+  full: boolean;
 }
 
 const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
@@ -95,6 +100,23 @@ export function skillStatuses(
   );
 }
 
+/** Categories this grind will scan. Heavy scanners stay behind `--full`. */
+export function scanCategoriesFor(
+  flags: Pick<Flags, 'full' | 'skipCategories'>,
+): TaskCategory[] {
+  const base: readonly TaskCategory[] = flags.full
+    ? SCANNED_CATEGORIES
+    : ['type-error', 'todo-resolution'];
+  return base.filter((category) => !flags.skipCategories.includes(category));
+}
+
+/** Skip list for the loop, including scanners this run will not execute. */
+export function categoriesToSkip(flags: Flags): TaskCategory[] {
+  const active = new Set(scanCategoriesFor(flags));
+  const idle = SCANNED_CATEGORIES.filter((category) => !active.has(category));
+  return [...new Set([...flags.skipCategories, ...idle])];
+}
+
 export function formatSkillStatus(status: SkillStatus): string {
   if (status.path) return `   ${status.category} (${status.skill}): ${status.path}`;
   return `   ${status.category} (${status.skill}): missing, using built-in instructions`;
@@ -102,7 +124,7 @@ export function formatSkillStatus(status: SkillStatus): string {
 
 export function parseFlags(argv: readonly string[]): Flags | null {
   const flags: Flags = {
-    maxTasks: 5,
+    maxTasks: 1,
     skipCategories: [],
     dryRun: false,
     apply: false,
@@ -112,6 +134,7 @@ export function parseFlags(argv: readonly string[]): Flags | null {
     minSeverity: 'low',
     roundRobin: false,
     requireSkills: false,
+    full: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -154,6 +177,8 @@ export function parseFlags(argv: readonly string[]): Flags | null {
       flags.roundRobin = true;
     } else if (a === '--require-skills') {
       flags.requireSkills = true;
+    } else if (a === '--full') {
+      flags.full = true;
     } else if (a === '--help' || a === '-h') {
       return null;
     }
@@ -164,12 +189,15 @@ export function parseFlags(argv: readonly string[]): Flags | null {
 const HELP = `Usage: pnpm run:a [options]
 
 Options:
-  --max-tasks N       Max tasks per run (default: 5)
+  --max-tasks N       Max tasks per run (default: 1)
   --skip cat1,cat2    Skip categories (e.g. dependency-update,documentation)
   --dry-run           Scan and report tasks without executing
-  --apply             Push passing changes and open a pull request.
-                      Without this flag the loop still runs the gates, then
-                      stops before commit, push, and pull request creation.
+  --apply             Push a new auto/* branch and open a draft pull request.
+                      Does not overwrite a branch that already exists on the
+                      remote. Without this flag the loop still runs the gates,
+                      then stops before commit, push, and pull request creation.
+  --full              Also scan test failures, coverage gaps, and dead code.
+                      The default scan is type errors and TODO markers.
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
   --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
@@ -215,8 +243,8 @@ export async function main(): Promise<void> {
   }
 
   // pnpm --filter changes the working directory to the package directory.
-  // Resolve the actual git repository root so scanner paths, config paths,
-  // and worktree paths agree on what "relative to the repository root" means.
+  // Resolve the actual git repository root so config paths and the
+  // scratch clone agree on what "relative to the repository root" means.
   try {
     env.REPO_ROOT = execSync('git rev-parse --show-toplevel', {
       cwd: env.REPO_ROOT,
@@ -246,17 +274,18 @@ export async function main(): Promise<void> {
   console.log(`   Order: ${flags.roundRobin ? 'round-robin' : 'priority'}`);
   console.log(`   Dry run: ${flags.dryRun}`);
   console.log(
-    `   Publish: ${flags.apply ? 'push and open a pull request' : 'off (pass --apply to publish)'}`,
+    `   Publish: ${flags.apply ? 'push a new branch and open a draft pull request' : 'off (pass --apply to publish)'}`,
   );
-  console.log(
-    `   --apply updates the loop's auto/* branches and opens pull requests.\n`,
-  );
+  console.log(`   Scan: ${flags.full ? 'full' : 'type errors and TODOs (pass --full for tests, coverage, and dead code)'}`);
+  console.log('');
 
   const skillsPath = resolveConfiguredPath(
     env.REPO_ROOT,
     process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
   );
-  const skills = skillStatuses(skillsPath, flags.skipCategories);
+  const skipCategories = categoriesToSkip(flags);
+  const scanCategories = scanCategoriesFor(flags);
+  const skills = skillStatuses(skillsPath, skipCategories);
   console.log('Skills:');
   for (const status of skills) console.log(formatSkillStatus(status));
   console.log('');
@@ -268,12 +297,60 @@ export async function main(): Promise<void> {
   }
 
   const profile = resolveProfile(flags.profile);
+  const sourceRoot = env.REPO_ROOT;
+  let scratch: string | null = null;
+  try {
+    scratch = await prepareScratchClone(sourceRoot);
+    await runAgainstClone({
+      flags,
+      env,
+      sourceRoot,
+      scratch,
+      runner,
+      fileReader,
+      profile,
+      skillsPath,
+      skipCategories,
+      scanCategories,
+    });
+  } finally {
+    if (scratch) await removeScratchClone(scratch);
+  }
+}
+
+interface GrindRun {
+  flags: Flags;
+  env: EnvConfig;
+  sourceRoot: string;
+  scratch: string;
+  runner: ReturnType<typeof createSandboxedCommandRunner>;
+  fileReader: ReturnType<typeof createFileReader>;
+  profile: LanguageProfile;
+  skillsPath: string;
+  skipCategories: TaskCategory[];
+  scanCategories: TaskCategory[];
+}
+
+async function runAgainstClone(run: GrindRun): Promise<void> {
+  const {
+    flags,
+    env,
+    sourceRoot,
+    scratch,
+    runner,
+    fileReader,
+    profile,
+    skillsPath,
+    skipCategories,
+    scanCategories,
+  } = run;
 
   if (flags.dryRun) {
     const scan = await scanCodebase(
-      env.REPO_ROOT,
+      scratch,
       { runner, fs: fileReader },
       profile,
+      { categories: scanCategories, sequential: true },
     );
     console.log(
       `📋 Scan found ${scan.tasks.length} tasks (${scan.scanDurationMs}ms):\n`,
@@ -299,18 +376,6 @@ export async function main(): Promise<void> {
     return;
   }
 
-  // Informational — worktree isolation means uncommitted changes in
-  // the main checkout are safe from the loop. We still surface a note
-  // so the user knows their in-flight work wasn't forgotten about.
-  const gitStatus = await runner.run('git', ['status', '--porcelain'], {
-    cwd: env.REPO_ROOT,
-  });
-  if (gitStatus.exitCode === 0 && gitStatus.stdout.trim()) {
-    console.log(
-      "⚠️  Working tree has uncommitted changes. The autonomous loop runs in isolated git worktrees, so your changes are safe.\n",
-    );
-  }
-
   // When --transcripts is set, wrap every LLM/Codex call and the
   // BudgetManager.allocate boundary so the analyzer can attribute each
   // conversational turn to its task. The wrapping is transparent — the
@@ -324,9 +389,9 @@ export async function main(): Promise<void> {
       kind: 'run-start',
       ts: new Date().toISOString(),
       extra: {
-        repoRoot: env.REPO_ROOT,
+        repoRoot: sourceRoot,
         maxTasks: flags.maxTasks,
-        skipCategories: flags.skipCategories,
+        skipCategories,
       },
     });
   }
@@ -353,8 +418,8 @@ export async function main(): Promise<void> {
     : createCodexCaller(env.OPENAI_API_KEY);
   const llm = sink ? instrumentLLMCaller(realLLM, sink) : realLLM;
   const codex = sink ? instrumentCodexCaller(realCodex, sink) : realCodex;
-  const git = createGitOps(env.REPO_ROOT);
-  const costInfra = createCostInfra(env.REPO_ROOT);
+  const git = createGitOps(scratch);
+  const costInfra = createCostInfra(sourceRoot);
   const budgetManager = sink
     ? wrapBudgetManager(costInfra.budgetManager, sink)
     : costInfra.budgetManager;
@@ -373,12 +438,14 @@ export async function main(): Promise<void> {
     maxAttempts: 2,
     taskCooldownMs: 5000,
     markdownSkillsPath: skillsPath,
-    repoRoot: env.REPO_ROOT,
+    repoRoot: scratch,
     queuePath: resolveConfiguredPath(
-      env.REPO_ROOT,
+      sourceRoot,
       process.env.ASIL_QUEUE_PATH ?? '.asil/usage-data/queue.json',
     ),
-    skipCategories: flags.skipCategories,
+    skipCategories,
+    scanCategories,
+    scanSequential: true,
     minSeverity: flags.minSeverity,
     dequeueMode: flags.roundRobin ? 'round-robin' : 'priority',
     openPullRequests: flags.apply,
@@ -392,14 +459,13 @@ export async function main(): Promise<void> {
   // `// DOMAIN_QUESTION:` markers — present each with Opus-generated
   // proposed answers, accept a numeric pick / free-text / skip / abort.
   // `--skip-questions` bypasses the prompt but still excludes blocked
-  // files from the run (so the loop never silently makes decisions in
-  // code Dušan hasn't decided about).
-  const domainStore = createDomainAnswerStore(env.REPO_ROOT);
+  // files from the run.
+  const domainStore = createDomainAnswerStore(sourceRoot);
   let blockedFiles = new Set<string>();
 
   if (flags.skipQuestions) {
     const questions = await findDomainQuestions({
-      repoRoot: env.REPO_ROOT,
+      repoRoot: scratch,
       runner,
     });
     for (const q of questions) {
@@ -417,7 +483,7 @@ export async function main(): Promise<void> {
     });
     try {
       const triage = await triageDomainQuestions({
-        repoRoot: env.REPO_ROOT,
+        repoRoot: scratch,
         runner,
         llm,
         store: domainStore,
@@ -488,9 +554,10 @@ export async function main(): Promise<void> {
   if (held.length > 0) {
     console.log('\nVerified, not published:');
     for (const outcome of held) {
-      console.log(
-        `   ${outcome.taskId} — re-run with --apply to push and open a pull request`,
-      );
+      const reason =
+        outcome.failureReason ??
+        're-run with --apply to push and open a draft pull request';
+      console.log(`   ${outcome.taskId} — ${reason}`);
     }
   }
 
@@ -507,7 +574,7 @@ export async function main(): Promise<void> {
   // (i.e. operator skipped them this run), nudge so they don't get
   // forgotten.
   const postRunQuestions = await findDomainQuestions({
-    repoRoot: env.REPO_ROOT,
+    repoRoot: scratch,
     runner,
   });
   const stillUnresolved = postRunQuestions.filter(

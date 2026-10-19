@@ -136,6 +136,11 @@ export interface ExecuteOptions {
    * that can safely operate directly on repoRoot.
    */
   workDir?: string;
+  /**
+   * Called after a patch is applied and before typecheck. Grind uses
+   * this to rebuild only the workspace package that contains the edit.
+   */
+  onPatchApplied?: (workDir: string, filePath: string) => Promise<void>;
 }
 
 export async function executeTask(
@@ -388,6 +393,11 @@ export async function executeTask(
 
   const diff = attempt.diff;
   const response = attempt.response;
+
+  const touched = task.filePaths[0];
+  if (opts.onPatchApplied && touched) {
+    await opts.onPatchApplied(workDir, touched);
+  }
 
   const typeCheck = await runCheck(deps.runner, workDir, ['typecheck']);
   if (!typeCheck.passed) {

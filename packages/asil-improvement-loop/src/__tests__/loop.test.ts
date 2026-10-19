@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BudgetManager, TokenTracker } from 'asil-cost-controller';
-import { runLoop } from '../loop.js';
+import { runLoop, touchedPackageBuildArgs } from '../loop.js';
 import { TaskQueue } from '../task-queue.js';
 import { CycleDetector } from '../cycle-detector.js';
 import type { ImprovementLoopConfig } from '../types.js';
@@ -29,6 +29,46 @@ import {
 function fakeReadCurrent(_absPath: string): string | null {
   return 'const existing = 1;\n';
 }
+
+describe('touchedPackageBuildArgs', () => {
+  it('selects the nearest package that has a build script', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pkg-build-'));
+    try {
+      mkdirSync(join(root, 'packages', 'foo', 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ scripts: { build: 'tsc' } }),
+      );
+      writeFileSync(
+        join(root, 'packages', 'foo', 'package.json'),
+        JSON.stringify({ scripts: { build: 'tsup' } }),
+      );
+      writeFileSync(
+        join(root, 'packages', 'foo', 'src', 'foo.ts'),
+        'export const n = 1;\n',
+      );
+      expect(touchedPackageBuildArgs(root, 'packages/foo/src/foo.ts')).toEqual([
+        '--filter',
+        './packages/foo',
+        'run',
+        'build',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when no package defines a build script', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pkg-nobuild-'));
+    try {
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app' }));
+      expect(touchedPackageBuildArgs(root, 'src/app.ts')).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('runLoop — integration', () => {
   let dir: string;
@@ -238,11 +278,60 @@ describe('runLoop — integration', () => {
     expect(installArgsSeen[0]).toContain('--ignore-scripts');
   });
 
-  it('pnpm install failure in the worktree → task aborts as infra-failed, LLM never called, worktree cleaned (Codex #6)', async () => {
+  it('installs and recursively builds once per run', async () => {
+    const queue = new TaskQueue(queuePath);
+    queue.enqueue(mkTask({ id: 't-one' }));
+    queue.enqueue(mkTask({ id: 't-two', filePaths: ['packages/bar/src/bar.ts'] }));
+
+    let installs = 0;
+    let recursiveBuilds = 0;
+    const runner = mockRunner([
+      {
+        match: (cmd, args) => {
+          if (cmd === 'pnpm' && args.includes('install')) {
+            installs += 1;
+            return true;
+          }
+          if (
+            cmd === 'pnpm' &&
+            args[0] === 'run' &&
+            args.includes('-r') &&
+            args.includes('build')
+          ) {
+            recursiveBuilds += 1;
+            return true;
+          }
+          return false;
+        },
+        exitCode: 0,
+      },
+      { match: (cmd) => cmd === 'diff', exitCode: 1, stdout: CANNED_UNIFIED_DIFF },
+      { match: (cmd) => cmd === 'pnpm', exitCode: 0 },
+      { match: (cmd) => cmd === 'grep', exitCode: 0 },
+    ]);
+
+    await runLoop(cfg({ maxTasksPerRun: 2 }), {
+      llm: goodLLM(),
+      codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+      git: mockGit('https://example.com/pr/4'),
+      tracker,
+      budgetManager,
+      runner,
+      fileReader: mockFileReader(),
+      fileFetcher: mockFileFetcher(),
+      diff: mockDiffApplier(),
+      readCurrent: fakeReadCurrent,
+      queue,
+    });
+
+    expect(installs).toBe(1);
+    expect(recursiveBuilds).toBe(1);
+  });
+
+  it('pnpm install failure aborts the run before any task calls the model', async () => {
     const queue = new TaskQueue(queuePath);
     queue.enqueue(mkTask({ id: 't-install-fail' }));
 
-    // install fails; the LLM would only run AFTER a successful bootstrap.
     const llm = goodLLM();
 
     const runner = mockRunner([
@@ -270,10 +359,9 @@ describe('runLoop — integration', () => {
     expect(result.outcomes[0]?.status).toBe('infra-failed');
     expect(result.outcomes[0]?.failureReason).toMatch(/install failed/i);
     expect(result.prsOpened).toBe(0);
-    // The executor LLM must NOT have run — we aborted before execution.
     expect(llm.calls.length).toBe(0);
-    // Worktree still cleaned up on the abort path.
-    expect(git.cleanedUp.length).toBe(1);
+    expect(git.operations.some((op) => op.startsWith('createBranch:'))).toBe(false);
+    expect(git.cleanedUp.length).toBe(0);
   });
 
   it('self-review reject → task marked FAILED (not completed) + worktree cleaned', async () => {

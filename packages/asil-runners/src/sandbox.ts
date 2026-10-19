@@ -216,6 +216,17 @@ export function buildBwrapArgs(
   return bwrapArgs;
 }
 
+/** Run `bwrap` under `nice -n 19` when `nice` is on `PATH`. */
+export function niceInvocation(
+  bwrapArgs: readonly string[],
+  pathEnv: string,
+): { command: string; args: string[] } {
+  if (resolveCommandOnPath('nice', pathEnv)) {
+    return { command: 'nice', args: ['-n', '19', 'bwrap', ...bwrapArgs] };
+  }
+  return { command: 'bwrap', args: [...bwrapArgs] };
+}
+
 let warnedSandboxOff = false;
 
 /** Target-repo command runner. Jailed unless `ASIL_SANDBOX=off`. */
@@ -244,7 +255,10 @@ export function createSandboxedCommandRunner(
         const message = err instanceof Error ? err.message : String(err);
         return { stdout: '', stderr: message, exitCode: 1 };
       }
-      const result = await inner.run('bwrap', bwrapArgs, { cwd: opts.cwd });
+      const invocation = niceInvocation(bwrapArgs, env.PATH ?? '');
+      const result = await inner.run(invocation.command, invocation.args, {
+        cwd: opts.cwd,
+      });
       if (result.exitCode === 127) {
         return {
           stdout: result.stdout,

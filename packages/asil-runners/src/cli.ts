@@ -50,7 +50,8 @@ const HELP = `
   Examples:
     pnpm auto think "add rate limiting to the connect API endpoints"
     pnpm auto grind --dry-run
-    pnpm auto grind --max-tasks 3 --apply
+    pnpm auto grind --max-tasks 1 --apply
+    pnpm auto grind --full --apply
     pnpm auto grind --skip dependency-update,documentation
     pnpm auto grind --skip-questions
     pnpm auto questions
@@ -64,9 +65,14 @@ const HELP = `
     OPENAI_API_KEY is only needed for grind (adversarial gate).
     REPO_ROOT is required for grind. It does not default to the
     current directory.
-    grind does not commit, push, or open a pull request unless you
-    pass --apply. Target-repository commands run inside bubblewrap
-    unless ASIL_SANDBOX=off.
+    grind copies the repository under the system temp directory and
+    does not run commands in the checkout you have open. The default
+    run is one type-error or TODO task. Pass --full to add tests,
+    coverage, and dead code. grind does not commit, push, or open a
+    pull request unless you pass --apply. --apply pushes a new auto/*
+    branch and opens a draft pull request. It does not overwrite a
+    branch that is already on the remote. Target-repository commands
+    run inside bubblewrap unless ASIL_SANDBOX=off.
 `.trimStart();
 
 export async function runCli(

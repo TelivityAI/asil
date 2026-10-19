@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { RemoteBranchExistsError } from 'asil-improvement-loop';
 import {
   BudgetManager,
   CostCheckpoint,
@@ -20,6 +21,10 @@ import {
   createFileReader,
   createGitOps,
   gitOpsEnv,
+  isScratchClone,
+  prepareScratchClone,
+  removeScratchClone,
+  scratchClonePath,
   createOpenAICompatibleCaller,
   createOpenAICompatibleCodexCaller,
   loadEnv,
@@ -616,228 +621,150 @@ describe('wiring', () => {
     });
   });
 
+  describe('scratch clone', () => {
+    const source = '/repo/example';
+
+    it('clones with --no-hardlinks and points origin at the real remote', async () => {
+      const dest = scratchClonePath(source);
+      const calls: Array<{ args: string[]; cwd?: string }> = [];
+      const runner = {
+        async run(_cmd: string, args: string[], opts: { cwd: string }) {
+          calls.push({ args, cwd: opts.cwd });
+          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+            return { stdout: `${source}\n`, stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+            return { stdout: 'abc123\n', stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'config' && args.includes('remote.origin.url')) {
+            return {
+              stdout: 'https://github.com/acme/example.git\n',
+              stderr: '',
+              exitCode: 0,
+            };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      rmSync(dest, { recursive: true, force: true });
+      const path = await prepareScratchClone(source, runner);
+      expect(path).toBe(dest);
+      expect(isScratchClone(path)).toBe(true);
+      const clone = calls.find((c) => c.args[0] === 'clone');
+      expect(clone?.args).toEqual(['clone', '--no-hardlinks', source, dest]);
+      expect(clone?.args).not.toContain('fetch');
+      const setUrl = calls.find((c) => c.args[0] === 'remote' && c.args[1] === 'set-url');
+      expect(setUrl?.args).toContain('https://github.com/acme/example.git');
+      expect(setUrl?.cwd).toBe(dest);
+      expect(calls.some((c) => c.args[0] === 'fetch')).toBe(false);
+    });
+
+    it('reuses an existing clone of this repo and does not fetch', async () => {
+      const dest = scratchClonePath(source);
+      mkdirSync(dest, { recursive: true });
+      const calls: Array<{ args: string[] }> = [];
+      const runner = {
+        async run(_cmd: string, args: string[], opts: { cwd: string }) {
+          calls.push({ args });
+          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+            const top = opts.cwd === dest ? dest : source;
+            return { stdout: `${top}\n`, stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'config' && args.includes('asil.scratchSource')) {
+            return { stdout: `${source}\n`, stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      try {
+        const path = await prepareScratchClone(source, runner);
+        expect(path).toBe(dest);
+        expect(calls.some((c) => c.args[0] === 'clone')).toBe(false);
+        expect(calls.some((c) => c.args[0] === 'fetch')).toBe(false);
+      } finally {
+        rmSync(dest, { recursive: true, force: true });
+      }
+    });
+
+    it('removeScratchClone deletes only the scratch directory', async () => {
+      const dest = scratchClonePath(source);
+      mkdirSync(dest, { recursive: true });
+      await removeScratchClone(source);
+      expect(existsSync(dest)).toBe(false);
+      await removeScratchClone('/etc');
+      expect(existsSync('/etc')).toBe(true);
+    });
+  });
+
   describe('createGitOps', () => {
-    it('returns the full worktree-aware GitOperations surface', () => {
-      const git = createGitOps('/tmp');
+    const source = '/repo/example';
+    const scratch = scratchClonePath(source);
+
+    function scratchRunner(
+      extra?: (
+        args: string[],
+        cwd: string,
+      ) => { stdout: string; stderr: string; exitCode: number } | undefined,
+    ) {
+      const calls: Array<{ cmd: string; args: string[]; cwd?: string }> = [];
+      const runner = {
+        async run(cmd: string, args: string[], opts: { cwd: string }) {
+          calls.push({ cmd, args, cwd: opts.cwd });
+          const overridden = extra?.(args, opts.cwd);
+          if (overridden) return overridden;
+          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+            return { stdout: `${scratch}\n`, stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'config' && args.includes('asil.scratchBase')) {
+            return { stdout: 'abc123\n', stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      return { calls, runner };
+    }
+
+    it('returns the git operations surface', () => {
+      const git = createGitOps(scratch);
       expect(typeof git.createBranch).toBe('function');
       expect(typeof git.applyDiff).toBe('function');
       expect(typeof git.commit).toBe('function');
       expect(typeof git.push).toBe('function');
       expect(typeof git.createPR).toBe('function');
-      // cleanup() is the non-negotiable worktree teardown hook.
       expect(typeof git.cleanup).toBe('function');
     });
 
-    it('createBranch succeeds when `git worktree add` works', async () => {
-      const calls: Array<{ cmd: string; args: string[] }> = [];
-      const runner = {
-        async run(cmd: string, args: string[]) {
-          calls.push({ cmd, args });
-          // rev-parse --show-toplevel needs to return a usable path
-          // so subsequent git ops target the right root.
-          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
-            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps('/repo', runner);
+    it('createBranch checks out inside the scratch clone and does not touch the source repo', async () => {
+      const { calls, runner } = scratchRunner();
+      const git = createGitOps(scratch, runner);
       const path = await git.createBranch('auto/test-failure/abc12345');
-      expect(path).toMatch(/asil-auto-[0-9a-f]{12}-auto-test-failure-abc12345/);
-      expect(calls.some((c) => c.args.includes('clone'))).toBe(false);
-    });
-
-    it('createBranch deletes a stale local branch before creating a new one (fixes "a branch named X already exists" on retry)', async () => {
-      const calls: Array<{ cmd: string; args: string[]; cwd?: string }> = [];
-      const runner = {
-        async run(cmd: string, args: string[], opts: { cwd: string }) {
-          calls.push({ cmd, args, cwd: opts.cwd });
-          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
-            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps('/repo', runner);
-      await git.createBranch('auto/test-failure/abc12345');
-
-      // The fix: `git branch -D <name>` must run in repoRoot before
-      // `git worktree add -b <name>`. Otherwise the add fails with
-      // "a branch named '<name>' already exists" on retry after a
-      // previous run that left the branch ref behind.
-      const branchDeleteIdx = calls.findIndex(
-        (c) =>
-          c.args[0] === 'branch' &&
-          c.args[1] === '-D' &&
-          c.args[2] === 'auto/test-failure/abc12345' &&
-          c.cwd === '/repo',
-      );
-      const worktreeAddIdx = calls.findIndex(
-        (c) => c.args[0] === 'worktree' && c.args[1] === 'add',
-      );
-      expect(branchDeleteIdx).toBeGreaterThanOrEqual(0);
-      expect(worktreeAddIdx).toBeGreaterThanOrEqual(0);
-      expect(branchDeleteIdx).toBeLessThan(worktreeAddIdx);
-    });
-
-    it('createBranch also prunes stale worktree admin records before adding', async () => {
-      const calls: Array<{ args: string[] }> = [];
-      const runner = {
-        async run(_cmd: string, args: string[]) {
-          calls.push({ args });
-          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
-            return { stdout: '/repo\n', stderr: '', exitCode: 0 };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps('/repo', runner);
-      await git.createBranch('auto/x/y');
-      const pruneIdx = calls.findIndex(
-        (c) => c.args[0] === 'worktree' && c.args[1] === 'prune',
-      );
-      const addIdx = calls.findIndex(
-        (c) => c.args[0] === 'worktree' && c.args[1] === 'add',
-      );
-      expect(pruneIdx).toBeGreaterThanOrEqual(0);
-      expect(pruneIdx).toBeLessThan(addIdx);
-    });
-
-    it('createGitOps resolves the true git root via `git rev-parse --show-toplevel` (fixes seedPath-is-a-subdir bug)', async () => {
-      const calls: Array<{ args: string[]; cwd?: string }> = [];
-      const runner = {
-        async run(_cmd: string, args: string[], opts: { cwd: string }) {
-          calls.push({ args, cwd: opts.cwd });
-          // Seed was the runners package dir; rev-parse walks up to
-          // the true repo root.
-          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
-            return {
-              stdout: '/tmp/example-repo\n',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps(
-        '/tmp/example-repo/autonomous/runners',
-        runner,
-      );
-      await git.createBranch('auto/x/y');
-
-      // rev-parse runs with cwd = seed path (starting point).
-      const revParse = calls.find(
-        (c) => c.args[0] === 'rev-parse' && c.args.includes('--show-toplevel'),
-      );
-      expect(revParse?.cwd).toBe('/tmp/example-repo/autonomous/runners');
-
-      // Every subsequent git command uses the RESOLVED root, not the seed.
-      const worktreeAdd = calls.find(
-        (c) => c.args[0] === 'worktree' && c.args[1] === 'add',
-      );
-      expect(worktreeAdd?.cwd).toBe('/tmp/example-repo');
-    });
-
-    it('clone fallback sources from the RESOLVED root, not the (possibly wrong) seed path', async () => {
-      const calls: Array<{ args: string[]; cwd?: string }> = [];
-      const runner = {
-        async run(_cmd: string, args: string[], opts: { cwd: string }) {
-          calls.push({ args, cwd: opts.cwd });
-          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
-            return { stdout: '/true/repo\n', stderr: '', exitCode: 0 };
-          }
-          if (args[0] === 'worktree' && args[1] === 'add') {
-            // Force fallback.
-            return { stdout: '', stderr: 'drive error', exitCode: 128 };
-          }
-          if (args[0] === 'config' && args.includes('remote.origin.url')) {
-            return {
-              stdout: 'https://github.com/acme/example.git',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps('/some/subdir', runner);
-      await git.createBranch('auto/x/y');
-
-      const clone = calls.find((c) => c.args[0] === 'clone');
-      // The clone source (second positional arg after flags) must be
-      // the resolved root, not the seed.
-      expect(clone?.args).toContain('/true/repo');
-      expect(clone?.args).not.toContain('/some/subdir');
-    });
-
-    it('createBranch falls back to `git clone` when `git worktree add` fails (Google Drive / FUSE mount case)', async () => {
-      const calls: Array<{ cmd: string; args: string[] }> = [];
-      const runner = {
-        async run(cmd: string, args: string[]) {
-          calls.push({ cmd, args });
-          // Simulate the Drive failure for `worktree add`.
-          if (args[0] === 'worktree' && args[1] === 'add') {
-            return {
-              stdout: '',
-              stderr: 'fatal: cannot create directory',
-              exitCode: 128,
-            };
-          }
-          // Surface the origin URL so remote set-url gets called.
-          if (args[0] === 'config' && args.includes('remote.origin.url')) {
-            return {
-              stdout: 'https://github.com/acme/example.git',
-              stderr: '',
-              exitCode: 0,
-            };
-          }
-          return { stdout: '', stderr: '', exitCode: 0 };
-        },
-      };
-      const git = createGitOps('/repo', runner);
-      const path = await git.createBranch('auto/test-failure/abc12345');
-      expect(path).toMatch(/asil-auto-[0-9a-f]{12}-auto-test-failure-abc12345/);
-      // Clone fallback actually ran.
-      const cloneCall = calls.find((c) => c.args[0] === 'clone');
-      expect(cloneCall).toBeDefined();
-      expect(cloneCall?.args).toContain('--no-hardlinks');
-      expect(cloneCall?.args).toContain('/repo');
-      // Origin rewired to the real GitHub URL so `push` doesn't target
-      // the Drive repo.
-      const setUrl = calls.find(
-        (c) => c.args[0] === 'remote' && c.args[1] === 'set-url',
-      );
-      expect(setUrl?.args).toContain('https://github.com/acme/example.git');
-      // Branch created off the clone's HEAD.
+      expect(path).toBe(scratch);
       const checkout = calls.find((c) => c.args[0] === 'checkout');
-      expect(checkout?.args).toEqual(['checkout', '-b', 'auto/test-failure/abc12345']);
+      expect(checkout?.args).toEqual([
+        'checkout',
+        '-B',
+        'auto/test-failure/abc12345',
+        'abc123',
+      ]);
+      expect(checkout?.cwd).toBe(scratch);
+      expect(calls.some((c) => c.args.includes('worktree'))).toBe(false);
+      expect(calls.some((c) => c.args[0] === 'branch' && c.args[1] === '-D')).toBe(
+        false,
+      );
+      expect(calls.some((c) => c.cwd === source)).toBe(false);
     });
 
-    it('createBranch throws with a clear error when BOTH worktree and clone fail', async () => {
+    it('refuses to create a branch when the git root is the open checkout', async () => {
       const runner = {
         async run(_cmd: string, args: string[]) {
-          if (args[0] === 'worktree' && args[1] === 'add') {
-            return {
-              stdout: '',
-              stderr: 'drive mount error',
-              exitCode: 128,
-            };
-          }
-          if (args[0] === 'clone') {
-            return {
-              stdout: '',
-              stderr: 'fatal: could not read from remote',
-              exitCode: 128,
-            };
+          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+            return { stdout: `${source}\n`, stderr: '', exitCode: 0 };
           }
           return { stdout: '', stderr: '', exitCode: 0 };
         },
       };
-      const git = createGitOps('/repo', runner);
-      await expect(git.createBranch('auto/x/y')).rejects.toThrow(
-        /both 'git worktree add' and 'git clone' failed/,
-      );
+      const git = createGitOps(source, runner);
+      await expect(git.createBranch('auto/x/y')).rejects.toThrow(/scratch clone/);
     });
 
     it('commits with hooks disabled', async () => {
@@ -883,10 +810,54 @@ describe('wiring', () => {
         base: 'main',
       });
       const gh = calls.find((c) => c.cmd === 'gh');
+      expect(gh?.args).toContain('--draft');
       const bodyFile = gh?.args[gh.args.indexOf('--body-file') + 1] ?? '';
       expect(bodyFile.startsWith(tmpdir())).toBe(true);
       expect(bodyFile.includes(`${join('repo', '.tmp-pr-body.md')}`)).toBe(false);
       expect(existsSync(resolve('/repo', '.tmp-pr-body.md'))).toBe(false);
+    });
+
+    it('pushes without force and skips a branch that already exists on origin', async () => {
+      const branch = 'auto/type-error/abc12345';
+      const fresh = scratchRunner();
+      const git = createGitOps(scratch, fresh.runner);
+      await git.push(branch, scratch);
+      const push = fresh.calls.find((c) => c.args[0] === 'push');
+      expect(push?.args).toEqual(['push', '-u', 'origin', branch]);
+      expect(push?.args).not.toContain('--force-with-lease');
+
+      const taken = scratchRunner((args) => {
+        if (args[0] === 'ls-remote') {
+          return {
+            stdout: `deadbeef\trefs/heads/${branch}\n`,
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        return undefined;
+      });
+      const blocked = createGitOps(scratch, taken.runner);
+      await expect(blocked.push(branch, scratch)).rejects.toBeInstanceOf(
+        RemoteBranchExistsError,
+      );
+      expect(taken.calls.some((c) => c.args[0] === 'push')).toBe(false);
+      expect(taken.calls.some((c) => c.args.includes('--force-with-lease'))).toBe(
+        false,
+      );
+    });
+
+    it('resets the scratch clone without deleting it or its dependencies', async () => {
+      const { calls, runner } = scratchRunner();
+      const git = createGitOps(scratch, runner);
+      await git.cleanup(scratch);
+      expect(calls.some((c) => c.args[0] === 'reset' && c.args[1] === '--hard')).toBe(
+        true,
+      );
+      const clean = calls.find((c) => c.args[0] === 'clean');
+      expect(clean?.args).toContain('node_modules');
+      expect(clean?.cwd).toBe(scratch);
+      expect(calls.some((c) => c.cmd === 'rm')).toBe(false);
+      expect(calls.some((c) => c.args.includes('worktree'))).toBe(false);
     });
 
     it('refuses to delete a path that is not this repository worktree', async () => {

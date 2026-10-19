@@ -200,6 +200,13 @@ export interface ImprovementLoopConfig {
   queuePath: string;
   skipCategories: TaskCategory[];
   /**
+   * Scanners to run. When omitted, every scanned category runs.
+   * The CLI sets this to type errors and TODOs unless `--full` is passed.
+   */
+  scanCategories?: readonly TaskCategory[];
+  /** Run scanners one after another instead of at the same time. */
+  scanSequential?: boolean;
+  /**
    * Severity floor. Tasks less severe than this are never enqueued or run —
    * the loop spends its budget on what matters. Defaults to `low` (accept
    * everything) when omitted, preserving prior behavior.

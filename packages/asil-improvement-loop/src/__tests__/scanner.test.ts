@@ -385,6 +385,44 @@ describe('scanner', () => {
     });
   });
 
+  it('batches dead-code usage searches', async () => {
+    const lines = Array.from({ length: 41 }, (_, i) => {
+      return `./pkg/f${i}.ts:1:export const Sym${i} = 1`;
+    }).join('\n');
+    let usageGreps = 0;
+    const runner = mockRunner([
+      {
+        match: (_, args) => args.some((a) => a.includes('^export')),
+        stdout: lines,
+      },
+      {
+        match: (_, args) => {
+          if (args.includes('-rn') || args.includes('-rln')) usageGreps += 1;
+          return true;
+        },
+        stdout: '',
+      },
+    ]);
+    const tasks = await scanDeadCode('/repo', { runner, fs: mockFileReader() });
+    expect(usageGreps).toBe(2);
+    expect(tasks.length).toBe(41);
+  });
+
+  it('scanCodebase can run a short category list one scanner after another', async () => {
+    const commands: string[] = [];
+    const runner = {
+      async run(cmd: string, args: string[]) {
+        commands.push(`${cmd} ${args[0] ?? ''}`);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    };
+    await scanCodebase('/repo', { runner, fs: mockFileReader() }, undefined, {
+      categories: ['type-error', 'todo-resolution'],
+      sequential: true,
+    });
+    expect(commands).toEqual(['pnpm typecheck', 'grep -rn']);
+  });
+
   it('scanCodebase aggregates all scanners in parallel', async () => {
     const runner = mockRunner([
       { match: () => true, stdout: '', exitCode: 0 },

@@ -7,6 +7,7 @@ import {
   buildBwrapArgs,
   commandAllowsNetwork,
   createSandboxedCommandRunner,
+  niceInvocation,
   toolchainRoot,
 } from '../sandbox.js';
 
@@ -67,6 +68,28 @@ describe('toolchainRoot', () => {
   it('uses the parent of a bin directory', () => {
     expect(toolchainRoot('/opt/node/bin/node')).toBe('/opt/node');
     expect(toolchainRoot('/usr/bin/grep')).toBe('/usr');
+  });
+});
+
+describe('niceInvocation', () => {
+  it('prefixes bwrap with nice -n 19 when nice is on PATH', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'asil-nice-'));
+    try {
+      writeFileSync(join(dir, 'nice'), '');
+      expect(niceInvocation(['--die-with-parent'], dir)).toEqual({
+        command: 'nice',
+        args: ['-n', '19', 'bwrap', '--die-with-parent'],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs bwrap directly when nice is absent', () => {
+    expect(niceInvocation(['--die-with-parent'], '/no/such/path')).toEqual({
+      command: 'bwrap',
+      args: ['--die-with-parent'],
+    });
   });
 });
 
