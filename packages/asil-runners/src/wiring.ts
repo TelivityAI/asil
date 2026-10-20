@@ -588,18 +588,30 @@ async function gitTopLevel(
   return out;
 }
 
+export interface PrepareScratchCloneOptions {
+  /** Delete any existing scratch for this repo and clone from scratch. */
+  fresh?: boolean;
+}
+
 /**
- * Clone `repoRoot` into `tmpdir()/asil-scratch-<hash>`. Reuse the
- * directory when it is already a clone of this repository. Fetch is
- * not required. `origin` is pointed at the source repository's remote.
+ * Clone `repoRoot` into `tmpdir()/asil-scratch-<hash>`, or reuse and
+ * refresh that directory when it is already a clone of this repository.
+ * Refresh copies objects from the local source path (not `origin`) and
+ * does not create worktrees on the open checkout. `origin` stays pointed
+ * at the source repository's real remote.
  */
 export async function prepareScratchClone(
   repoRoot: string,
   injectedRunner?: CommandRunner,
+  opts: PrepareScratchCloneOptions = {},
 ): Promise<string> {
   const runner = injectedRunner ?? createCommandRunner({ env: gitOpsEnv() });
   const source = await gitTopLevel(runner, repoRoot);
   const dest = scratchClonePath(source);
+
+  if (opts.fresh) {
+    await removeScratchClone(source);
+  }
 
   if (existsSync(dest)) {
     const marker = await runner.run(
@@ -612,7 +624,10 @@ export async function prepareScratchClone(
     });
     const sameSource = marker.exitCode === 0 && marker.stdout.trim() === source;
     const sameTop = top.exitCode === 0 && resolve(top.stdout.trim()) === dest;
-    if (sameSource && sameTop) return dest;
+    if (sameSource && sameTop) {
+      await refreshScratchFromSource(runner, source, dest);
+      return dest;
+    }
     if (!isScratchClone(dest)) {
       throw new Error(`Refusing to replace ${dest}: not an ASIL scratch clone.`);
     }
@@ -663,6 +678,61 @@ export async function prepareScratchClone(
   await runner.run('git', ['config', 'asil.scratchSource', source], { cwd: dest });
   await runner.run('git', ['config', 'asil.scratchBase', base], { cwd: dest });
   return dest;
+}
+
+/** Pull the open checkout's current HEAD into the scratch without worktrees. */
+async function refreshScratchFromSource(
+  runner: CommandRunner,
+  source: string,
+  dest: string,
+): Promise<void> {
+  const head = await runner.run('git', ['rev-parse', 'HEAD'], { cwd: source });
+  const sha = head.stdout.trim();
+  if (head.exitCode !== 0 || !sha) {
+    throw new Error(`failed to read HEAD from ${source}: ${head.stderr}`);
+  }
+
+  // Fetch objects from the local source path into a private ref. This
+  // does not create a worktree and does not rewrite origin.
+  const fetchRes = await runner.run(
+    'git',
+    ['fetch', '--no-tags', source, `+HEAD:refs/asil/source-head`],
+    { cwd: dest },
+  );
+  if (fetchRes.exitCode !== 0) {
+    throw new Error(
+      `failed to refresh scratch from ${source}: ${fetchRes.stderr.trim() || fetchRes.stdout.trim()}`,
+    );
+  }
+
+  const reset = await runner.run(
+    'git',
+    ['reset', '--hard', 'refs/asil/source-head'],
+    { cwd: dest },
+  );
+  if (reset.exitCode !== 0) {
+    throw new Error(
+      `failed to reset scratch to source HEAD: ${reset.stderr.trim() || reset.stdout.trim()}`,
+    );
+  }
+
+  await runner.run(
+    'git',
+    [
+      'clean',
+      '-fd',
+      '-e',
+      'node_modules',
+      '-e',
+      '.pnpm-store',
+      '-e',
+      'dist',
+      '-e',
+      '.asil-scratch',
+    ],
+    { cwd: dest },
+  );
+  await runner.run('git', ['config', 'asil.scratchBase', sha], { cwd: dest });
 }
 
 /** Delete the scratch clone for `repoRoot`, or `dir` when it is already that path. */
@@ -860,7 +930,18 @@ export function createGitOps(
       await runner.run('git', ['reset', '--hard'], { cwd: repoRoot });
       await runner.run(
         'git',
-        ['clean', '-fd', '-e', 'node_modules', '-e', '.pnpm-store', '-e', 'dist'],
+        [
+          'clean',
+          '-fd',
+          '-e',
+          'node_modules',
+          '-e',
+          '.pnpm-store',
+          '-e',
+          'dist',
+          '-e',
+          '.asil-scratch',
+        ],
         { cwd: repoRoot },
       );
     },

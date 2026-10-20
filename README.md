@@ -100,9 +100,9 @@ Git and `gh` stay outside the jail. They use an allowlisted environment with pat
 Other limits:
 
 - `REPO_ROOT` is required for `auto grind`, including `--dry-run`. It does not default to the current directory.
-- Grind copies the repository to `tmpdir()/asil-scratch-<hash>` and runs the scan, install, build, and tests there. It does not run commands or git writes in the checkout you have open. The copy is removed when the process exits.
+- Grind copies the repository to `tmpdir()/asil-scratch-<hash>` and runs the scan, install, build, and tests there. It does not run commands or git writes in the checkout you have open. The scratch stays warm across runs. Pass `--fresh` to delete it and clone again. `--interval SEC` sleeps and repeats in the same process, refreshing the scratch from the open checkout's current HEAD without creating worktrees there.
 - The default run handles one type-error or TODO task. `--full` adds tests, coverage, and dead code. `--max-tasks` raises the cap.
-- Install and a recursive build run once per grind. After a patch, only the workspace package that contains the edited file is rebuilt, and only when that package has a `build` script.
+- Install and a recursive build run once when the lockfile (or `package.json`) has changed, or when `node_modules` is missing. Unchanged lockfiles skip that bootstrap. After a patch, only the workspace package that contains the edited file is rebuilt, and only when that package has a `build` script.
 - Patch reads stay inside the target repository. Relative paths for usage data, the queue, skills, and domain answers cannot leave the repository. An absolute path is used as given unless it contains `..` and resolves outside the repository. Those files stay in the checkout you have open; the scratch clone is only the working tree.
 - `auto grind` does not commit, push, or open a pull request unless you pass `--apply`. `--apply` pushes a new `auto/*` branch and opens a draft pull request. It does not overwrite a branch that is already on the remote. Without `--apply`, a task that passes the gates stays queued.
 - Before scanning, grind prints whether each scanned category loaded a skill file. A missing file uses the built-in instructions. `--require-skills` exits before scanning when any scanned category is missing its skill.
@@ -133,7 +133,8 @@ pnpm --filter asil-runners run:b "add rate limiting to the connect API endpoint"
 # 4. Run the autonomous loop (System A)
 pnpm --filter asil-runners auto grind --dry-run
 pnpm --filter asil-runners auto grind --apply
-pnpm --filter asil-runners auto grind --full --apply
+pnpm --filter asil-runners auto grind --interval 300 --apply
+pnpm --filter asil-runners auto grind --fresh --full --apply
 ```
 
 See [`examples/quickstart.md`](examples/quickstart.md) for a five-minute integration walkthrough.
@@ -257,47 +258,43 @@ import {
   createFileReader,
   createGitOps,
   prepareScratchClone,
-  removeScratchClone,
   scrubbedEnv,
 } from './wiring.js';
 
 const repoRoot = process.env.REPO_ROOT!;
+// Reuses tmpdir()/asil-scratch-<hash>. Pass { fresh: true } to rebuild.
 const scratch = await prepareScratchClone(repoRoot);
 const cost = createCostInfra(repoRoot);
 
-try {
-  await runLoop(
-    {
-      executionModel: 'sonnet',
-      reviewModel: 'sonnet',
-      maxTasksPerRun: 1,
-      maxAttempts: 2,
-      taskCooldownMs: 5000,
-      markdownSkillsPath: `${repoRoot}/.asil/skills`,
-      repoRoot: scratch,
-      queuePath: `${repoRoot}/.asil/usage-data/queue.json`,
-      skipCategories: ['test-failure', 'coverage-gap', 'dead-code'],
-      scanCategories: ['type-error', 'todo-resolution'],
-      scanSequential: true,
-      // Set true only when this process should push and open a draft pull request.
-      openPullRequests: false,
-      codexConfig: { apiKey: 'OPENAI_API_KEY', model: 'gpt-4o' },
-    },
-    {
-      llm: createAnthropicCaller(process.env.ANTHROPIC_API_KEY!),
-      codex: createCodexCaller(process.env.OPENAI_API_KEY!),
-      git: createGitOps(scratch),
-      tracker: cost.tracker,
-      budgetManager: cost.budgetManager,
-      runner: createCommandRunner({ env: scrubbedEnv() }),
-      fileReader: createFileReader(),
-      fileFetcher: createFileFetcher(),
-      diff: createDiffApplier(),
-    },
-  );
-} finally {
-  await removeScratchClone(scratch);
-}
+await runLoop(
+  {
+    executionModel: 'sonnet',
+    reviewModel: 'sonnet',
+    maxTasksPerRun: 1,
+    maxAttempts: 2,
+    taskCooldownMs: 5000,
+    markdownSkillsPath: `${repoRoot}/.asil/skills`,
+    repoRoot: scratch,
+    queuePath: `${repoRoot}/.asil/usage-data/queue.json`,
+    skipCategories: ['test-failure', 'coverage-gap', 'dead-code'],
+    scanCategories: ['type-error', 'todo-resolution'],
+    scanSequential: true,
+    // Set true only when this process should push and open a draft pull request.
+    openPullRequests: false,
+    codexConfig: { apiKey: 'OPENAI_API_KEY', model: 'gpt-4o' },
+  },
+  {
+    llm: createAnthropicCaller(process.env.ANTHROPIC_API_KEY!),
+    codex: createCodexCaller(process.env.OPENAI_API_KEY!),
+    git: createGitOps(scratch),
+    tracker: cost.tracker,
+    budgetManager: cost.budgetManager,
+    runner: createCommandRunner({ env: scrubbedEnv() }),
+    fileReader: createFileReader(),
+    fileFetcher: createFileFetcher(),
+    diff: createDiffApplier(),
+  },
+);
 ```
 
 `LLMCaller` is a tiny mock-friendly interface (`call(systemPrompt, userPrompt, model) → Promise<{content, inputTokens, outputTokens}>`). The shipped wirings cover Anthropic, OpenAI, and any OpenAI-compatible HTTP server.
@@ -308,7 +305,7 @@ try {
 - **Three-persona self-review.** Code reviewer + security auditor + test engineer, each with its own scoped prompt, all run on the diff *only*. No prior-context pollution.
 - **Adversarial gate.** A different LLM (different provider) reads the diff cold and tries to break it. Catches things the writer's family doesn't see.
 - **Cost controller is first-class.** Budget allocation, per-call checkpoints, kill switch, daily caps, persisted state. Not a logging afterthought.
-- **Scratch clone.** Grind copies the repository under the system temp directory and does its git writes there. The checkout you have open is not a command working directory and its `.git` is not locked by a worktree.
+- **Warm scratch clone.** Grind copies the repository under the system temp directory and keeps that copy across runs. Commands and git writes happen there. The checkout you have open is not a command working directory and its `.git` is not locked by a worktree.
 - **Canary gates.** Pre-flight verification that safety guards haven't regressed. Three deterministic canaries run at the start of every `runLoop()` invocation — if any gate is silently broken, the loop aborts before processing real tasks. Zero LLM calls, zero token spend, deterministic.
 
 ## Canary Gates
@@ -336,7 +333,7 @@ Before processing any real tasks, the improvement loop runs three deterministic 
 ## Requirements
 
 - Node ≥ 20, pnpm ≥ 9
-- A target repo that uses pnpm (the executor runs `pnpm install` and `pnpm run -r build` once in the scratch clone, then `pnpm test` and `pnpm typecheck` there)
+- A target repo that uses pnpm (the executor runs `pnpm install` and `pnpm run -r build` in the scratch clone when the lockfile changes, then `pnpm test` and `pnpm typecheck` there)
 - Anthropic API key (primary)
 - OpenAI API key (adversarial gate)
 

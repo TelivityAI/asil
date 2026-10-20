@@ -659,16 +659,19 @@ describe('wiring', () => {
       expect(calls.some((c) => c.args[0] === 'fetch')).toBe(false);
     });
 
-    it('reuses an existing clone of this repo and does not fetch', async () => {
+    it('reuses an existing clone and refreshes from the local source without cloning again', async () => {
       const dest = scratchClonePath(source);
       mkdirSync(dest, { recursive: true });
-      const calls: Array<{ args: string[] }> = [];
+      const calls: Array<{ args: string[]; cwd?: string }> = [];
       const runner = {
         async run(_cmd: string, args: string[], opts: { cwd: string }) {
-          calls.push({ args });
+          calls.push({ args, cwd: opts.cwd });
           if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
             const top = opts.cwd === dest ? dest : source;
             return { stdout: `${top}\n`, stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+            return { stdout: 'def456\n', stderr: '', exitCode: 0 };
           }
           if (args[0] === 'config' && args.includes('asil.scratchSource')) {
             return { stdout: `${source}\n`, stderr: '', exitCode: 0 };
@@ -680,7 +683,60 @@ describe('wiring', () => {
         const path = await prepareScratchClone(source, runner);
         expect(path).toBe(dest);
         expect(calls.some((c) => c.args[0] === 'clone')).toBe(false);
-        expect(calls.some((c) => c.args[0] === 'fetch')).toBe(false);
+        const fetch = calls.find((c) => c.args[0] === 'fetch');
+        expect(fetch?.args).toEqual([
+          'fetch',
+          '--no-tags',
+          source,
+          '+HEAD:refs/asil/source-head',
+        ]);
+        expect(fetch?.cwd).toBe(dest);
+        expect(
+          calls.some(
+            (c) =>
+              c.args[0] === 'reset' &&
+              c.args[1] === '--hard' &&
+              c.args[2] === 'refs/asil/source-head',
+          ),
+        ).toBe(true);
+        expect(
+          calls.some(
+            (c) =>
+              c.args[0] === 'config' &&
+              c.args.includes('asil.scratchBase') &&
+              c.args.includes('def456'),
+          ),
+        ).toBe(true);
+        expect(calls.some((c) => c.args.includes('worktree'))).toBe(false);
+      } finally {
+        rmSync(dest, { recursive: true, force: true });
+      }
+    });
+
+    it('--fresh deletes the warm scratch before cloning', async () => {
+      const dest = scratchClonePath(source);
+      mkdirSync(dest, { recursive: true });
+      const calls: Array<{ args: string[] }> = [];
+      const runner = {
+        async run(_cmd: string, args: string[]) {
+          calls.push({ args });
+          if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+            return { stdout: `${source}\n`, stderr: '', exitCode: 0 };
+          }
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+            return { stdout: 'abc123\n', stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      };
+      try {
+        expect(existsSync(dest)).toBe(true);
+        const path = await prepareScratchClone(source, runner, { fresh: true });
+        expect(path).toBe(dest);
+        // fresh deletes the warm directory before clone; the mock runner
+        // does not recreate it on disk.
+        expect(existsSync(dest)).toBe(false);
+        expect(calls.some((c) => c.args[0] === 'clone')).toBe(true);
       } finally {
         rmSync(dest, { recursive: true, force: true });
       }

@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BudgetManager, TokenTracker } from 'asil-cost-controller';
-import { runLoop, touchedPackageBuildArgs } from '../loop.js';
+import {
+  lockfileFingerprint,
+  lockHashMarkerPath,
+  runLoop,
+  shouldSkipWorkspaceBootstrap,
+  touchedPackageBuildArgs,
+} from '../loop.js';
 import { TaskQueue } from '../task-queue.js';
 import { CycleDetector } from '../cycle-detector.js';
 import type { ImprovementLoopConfig } from '../types.js';
@@ -29,6 +35,36 @@ import {
 function fakeReadCurrent(_absPath: string): string | null {
   return 'const existing = 1;\n';
 }
+
+describe('shouldSkipWorkspaceBootstrap', () => {
+  it('skips when the lockfile hash matches and node_modules exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lock-skip-'));
+    try {
+      writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+      mkdirSync(join(root, 'node_modules'));
+      const fingerprint = lockfileFingerprint(root);
+      expect(fingerprint).toMatch(/^pnpm-lock\.yaml:/);
+      mkdirSync(join(root, '.asil-scratch'), { recursive: true });
+      writeFileSync(lockHashMarkerPath(root), fingerprint!);
+      expect(shouldSkipWorkspaceBootstrap(root)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not skip when the lockfile changed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lock-changed-'));
+    try {
+      writeFileSync(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+      mkdirSync(join(root, 'node_modules'));
+      mkdirSync(join(root, '.asil-scratch'), { recursive: true });
+      writeFileSync(lockHashMarkerPath(root), 'pnpm-lock.yaml:stale');
+      expect(shouldSkipWorkspaceBootstrap(root)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('touchedPackageBuildArgs', () => {
   it('selects the nearest package that has a build script', () => {
@@ -326,6 +362,65 @@ describe('runLoop — integration', () => {
 
     expect(installs).toBe(1);
     expect(recursiveBuilds).toBe(1);
+  });
+
+  it('skips install and recursive build when the lockfile marker matches', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'loop-warm-'));
+    try {
+      writeFileSync(join(repo, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+      mkdirSync(join(repo, 'node_modules'));
+      mkdirSync(join(repo, '.asil-scratch'), { recursive: true });
+      writeFileSync(lockHashMarkerPath(repo), lockfileFingerprint(repo)!);
+
+      const queue = new TaskQueue(queuePath);
+      queue.enqueue(mkTask({ id: 't-warm' }));
+
+      let installs = 0;
+      let recursiveBuilds = 0;
+      const runner = mockRunner([
+        {
+          match: (cmd, args) => {
+            if (cmd === 'pnpm' && args.includes('install')) {
+              installs += 1;
+              return true;
+            }
+            if (
+              cmd === 'pnpm' &&
+              args[0] === 'run' &&
+              args.includes('-r') &&
+              args.includes('build')
+            ) {
+              recursiveBuilds += 1;
+              return true;
+            }
+            return false;
+          },
+          exitCode: 0,
+        },
+        { match: (cmd) => cmd === 'diff', exitCode: 1, stdout: CANNED_UNIFIED_DIFF },
+        { match: (cmd) => cmd === 'pnpm', exitCode: 0 },
+        { match: (cmd) => cmd === 'grep', exitCode: 0 },
+      ]);
+
+      await runLoop(cfg({ repoRoot: repo }), {
+        llm: goodLLM(),
+        codex: mockCodex(JSON.stringify({ approved: true, severity: 'pass' })),
+        git: mockGit('https://example.com/pr/5'),
+        tracker,
+        budgetManager,
+        runner,
+        fileReader: mockFileReader(),
+        fileFetcher: mockFileFetcher(),
+        diff: mockDiffApplier(),
+        readCurrent: fakeReadCurrent,
+        queue,
+      });
+
+      expect(installs).toBe(0);
+      expect(recursiveBuilds).toBe(0);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('pnpm install failure aborts the run before any task calls the model', async () => {

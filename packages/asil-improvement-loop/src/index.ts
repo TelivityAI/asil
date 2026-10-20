@@ -73,7 +73,16 @@ export {
   RemoteBranchExistsError,
   type GitOperations,
 } from './pr-builder.js';
-export { runLoop, isBlockedByDomainGuard, type LoopDeps, type LoopResult } from './loop.js';
+export {
+  runLoop,
+  isBlockedByDomainGuard,
+  touchedPackageBuildArgs,
+  lockfileFingerprint,
+  lockHashMarkerPath,
+  shouldSkipWorkspaceBootstrap,
+  type LoopDeps,
+  type LoopResult,
+} from './loop.js';
 export { runCanaryGate } from './canary-gate.js';
 export {
   DEFAULT_CANARIES,
