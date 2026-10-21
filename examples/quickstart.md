@@ -25,12 +25,14 @@ packages:
 
 ## 2. Set up environment
 
-Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other. `auto grind` refuses to start unless `REPO_ROOT` is set. Grind copies that repository under the system temp directory, reuses the copy across runs, and does not run commands or git writes in the checkout you have open. Pass `--fresh` to delete and re-clone. Pass `--interval SEC` to leave grind looping in one process. Target-repository commands run inside bubblewrap (`bwrap` on `PATH`). Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution.
+Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other. `auto grind` refuses to start unless `REPO_ROOT` is set. Grind copies that repository under the system temp directory, reuses the copy across runs, and does not run commands or git writes in the checkout you have open. Queue, usage, and domain-answer files also default under the system temp directory (`tmpdir()/asil-state-<hash>`). Set `ASIL_STATE_DIR` (or the specific path vars) to keep that state in-repo. Skills still load from `REPO_ROOT/.asil/skills`. Pass `--fresh` to delete and re-clone. Pass `--interval SEC` to leave grind looping in one process. Target-repository commands run inside bubblewrap (`bwrap` on `PATH`). Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution.
 
 ```
 ANTHROPIC_API_KEY=sk-ant-…
 OPENAI_API_KEY=sk-…
 REPO_ROOT=/absolute/path/to/your/repo
+# Optional: keep queue/usage/domain answers in-repo
+# ASIL_STATE_DIR=/absolute/path/to/your/repo/.asil
 ```
 
 ## 3. Drop in the runner skills
@@ -111,6 +113,7 @@ Reports come out as Markdown tables with per-task, per-system, and per-day cost 
 |---|---|---|
 | `git clone` into the temp directory fails | The source repository cannot be read, or the temp directory is not writable | Check `git status` in `REPO_ROOT` and that the system temp directory is writable. Grind does not create a worktree in the checkout you have open. |
 | Scratch looks stale | An old warm copy is being reused | Pass `--fresh` to delete `tmpdir()/asil-scratch-*` and clone again. |
+| Queue or usage files missing under `.asil/` in the open checkout | State defaults under `tmpdir()/asil-state-*` | Set `ASIL_STATE_DIR` (or `ASIL_QUEUE_PATH` / `ASIL_USAGE_DATA_DIR` / `ASIL_DOMAIN_ANSWERS_PATH`) if you want state in-repo. Grind logs the state root at start. |
 | `pnpm install` fails in the scratch clone | The clone has no `node_modules` yet, or the lockfile does not match | The loop runs `pnpm install --frozen-lockfile` when the lockfile hash changes. Install scripts stay off unless `ASIL_ALLOW_INSTALL_SCRIPTS=1`. |
 | Adversarial gate keeps blocking | Diff is genuinely contradictory or oversized | Check the gate's reason string; usually the LLM has a real point. Lower `maxAttempts` to fail faster. |
 | Cost cap hit immediately | Budget too low for selected models | Either bump `dailyBudgetUSD` or downgrade `executionModel` from `opus` to `sonnet`. |

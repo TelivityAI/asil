@@ -938,27 +938,50 @@ describe('wiring', () => {
 
   describe('createCostInfra', () => {
     let dir: string;
-    let savedEnv: string | undefined;
+    let savedUsage: string | undefined;
+    let savedState: string | undefined;
     beforeEach(() => {
       dir = mkdtempSync(join(tmpdir(), 'wiring-'));
-      savedEnv = process.env.ASIL_USAGE_DATA_DIR;
+      savedUsage = process.env.ASIL_USAGE_DATA_DIR;
+      savedState = process.env.ASIL_STATE_DIR;
       delete process.env.ASIL_USAGE_DATA_DIR;
+      delete process.env.ASIL_STATE_DIR;
     });
     afterEach(() => {
       rmSync(dir, { recursive: true, force: true });
-      if (savedEnv === undefined) {
+      if (savedUsage === undefined) {
         delete process.env.ASIL_USAGE_DATA_DIR;
       } else {
-        process.env.ASIL_USAGE_DATA_DIR = savedEnv;
+        process.env.ASIL_USAGE_DATA_DIR = savedUsage;
+      }
+      if (savedState === undefined) {
+        delete process.env.ASIL_STATE_DIR;
+      } else {
+        process.env.ASIL_STATE_DIR = savedState;
       }
     });
 
-    it('creates the default .asil/usage-data dir if missing and wires tracker + budget + reporter', () => {
+    it('creates the default usage-data dir under the temp state root', () => {
       const infra = createCostInfra(dir);
       expect(infra.tracker).toBeInstanceOf(TokenTracker);
       expect(infra.budgetManager).toBeInstanceOf(BudgetManager);
       expect(infra.reporter).toBeInstanceOf(UsageReporter);
-      expect(existsSync(join(dir, '.asil', 'usage-data'))).toBe(true);
+      expect(infra.dataDir.startsWith(join(tmpdir(), 'asil-state-'))).toBe(true);
+      expect(infra.dataDir.endsWith(join('.asil', 'usage-data'))).toBe(true);
+      expect(existsSync(infra.dataDir)).toBe(true);
+      expect(existsSync(join(dir, '.asil', 'usage-data'))).toBe(false);
+    });
+
+    it('honours ASIL_STATE_DIR for the default usage-data location', () => {
+      const state = mkdtempSync(join(tmpdir(), 'asil-state-override-'));
+      process.env.ASIL_STATE_DIR = state;
+      try {
+        const infra = createCostInfra(dir);
+        expect(infra.dataDir).toBe(join(state, '.asil', 'usage-data'));
+        expect(existsSync(infra.dataDir)).toBe(true);
+      } finally {
+        rmSync(state, { recursive: true, force: true });
+      }
     });
 
     it('honours ASIL_USAGE_DATA_DIR when set (relative path resolved against repoRoot)', () => {
@@ -966,6 +989,19 @@ describe('wiring', () => {
       const infra = createCostInfra(dir);
       expect(existsSync(join(dir, 'custom', 'spend'))).toBe(true);
       expect(infra.dataDir).toBe(join(dir, 'custom', 'spend'));
+    });
+
+    it('resolves a relative ASIL_USAGE_DATA_DIR against ASIL_STATE_DIR when set', () => {
+      const state = mkdtempSync(join(tmpdir(), 'asil-state-rel-'));
+      process.env.ASIL_STATE_DIR = state;
+      process.env.ASIL_USAGE_DATA_DIR = 'custom/spend';
+      try {
+        const infra = createCostInfra(dir);
+        expect(infra.dataDir).toBe(join(state, 'custom', 'spend'));
+        expect(existsSync(infra.dataDir)).toBe(true);
+      } finally {
+        rmSync(state, { recursive: true, force: true });
+      }
     });
 
     it('rejects a relative ASIL_USAGE_DATA_DIR that leaves the repository', () => {

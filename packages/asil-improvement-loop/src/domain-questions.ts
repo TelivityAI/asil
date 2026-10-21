@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { resolveConfiguredPath } from './paths.js';
+import { resolveGrindStatePath } from './paths.js';
 import type { CommandRunner } from './scanner.js';
 import { normalizePath } from './scanner.js';
 
@@ -174,9 +174,9 @@ interface PersistedState {
 /**
  * JSON-file-backed store for resolved answers and cached proposals.
  *
- * Path is intentionally tracked in git (NOT under .usage-data/) because
- * domain decisions are shared knowledge — once Dušan answers, every
- * machine that runs the loop should benefit.
+ * Defaults under the grind state root (temp unless `ASIL_STATE_DIR` is
+ * set). Operators who want shared answers can point
+ * `ASIL_DOMAIN_ANSWERS_PATH` at a tracked file.
  */
 export class DomainAnswerStore {
   private state: PersistedState;
@@ -270,13 +270,14 @@ export function buildDomainAnswerContext(
   return lines.join('\n');
 }
 
-/** Convenience factory used by the runner. Path defaults to
- *  `<repoRoot>/.asil/domain-answers.json`, overridable via the
- *  `ASIL_DOMAIN_ANSWERS_PATH` env var. A relative path must stay inside
- *  the repository. An absolute path is used as given unless a `..`
- *  segment resolves outside the repository. */
+/** Convenience factory used by the runner. Defaults under the grind
+ *  state root (`tmpdir()/asil-state-<hash>` unless `ASIL_STATE_DIR` is
+ *  set). Overridable via `ASIL_DOMAIN_ANSWERS_PATH`. */
 export function createDomainAnswerStore(repoRoot: string): DomainAnswerStore {
-  const configured = process.env.ASIL_DOMAIN_ANSWERS_PATH ?? '.asil/domain-answers.json';
-  const path = resolveConfiguredPath(repoRoot, configured);
+  const path = resolveGrindStatePath(
+    repoRoot,
+    process.env.ASIL_DOMAIN_ANSWERS_PATH,
+    '.asil/domain-answers.json',
+  );
   return new DomainAnswerStore(path);
 }
