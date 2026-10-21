@@ -44,7 +44,6 @@ import {
   createFileReader,
   createGitOps,
   prepareScratchClone,
-  removeScratchClone,
   type EnvConfig,
   createOpenAICompatibleCaller,
   createOpenAICompatibleCodexCaller,
@@ -73,6 +72,10 @@ interface Flags {
   requireSkills: boolean;
   /** Also scan tests, coverage, and dead code. Default is type errors and TODOs. */
   full: boolean;
+  /** Delete the warm scratch and clone again before this run. */
+  fresh: boolean;
+  /** Seconds to sleep between in-process grind iterations. Null = one shot. */
+  intervalSec: number | null;
 }
 
 const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
@@ -135,6 +138,8 @@ export function parseFlags(argv: readonly string[]): Flags | null {
     roundRobin: false,
     requireSkills: false,
     full: false,
+    fresh: false,
+    intervalSec: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -179,10 +184,22 @@ export function parseFlags(argv: readonly string[]): Flags | null {
       flags.requireSkills = true;
     } else if (a === '--full') {
       flags.full = true;
+    } else if (a === '--fresh') {
+      flags.fresh = true;
+    } else if (a === '--interval' && argv[i + 1]) {
+      const v = Number.parseInt(argv[i + 1]!, 10);
+      if (!Number.isFinite(v) || v < 1) {
+        console.error(`Invalid --interval value: ${argv[i + 1]} (expected seconds >= 1)`);
+        return null;
+      }
+      flags.intervalSec = v;
+      i += 1;
     } else if (a === '--help' || a === '-h') {
       return null;
     }
   }
+  // Interval mode must not block on stdin.
+  if (flags.intervalSec !== null) flags.skipQuestions = true;
   return flags;
 }
 
@@ -198,6 +215,11 @@ Options:
                       then stops before commit, push, and pull request creation.
   --full              Also scan test failures, coverage gaps, and dead code.
                       The default scan is type errors and TODO markers.
+  --fresh             Delete the warm scratch clone and copy the repository
+                      again before this run.
+  --interval SEC      After each run, sleep SEC seconds and grind again in
+                      this process, refreshing the scratch from the open
+                      checkout. Implies --skip-questions. Leave warm on exit.
   --skip-questions    Bypass interactive triage of DOMAIN_QUESTION markers
                       (still excludes their files from the run)
   --transcripts DIR   Capture per-task LLM transcripts to DIR and run the
@@ -277,6 +299,10 @@ export async function main(): Promise<void> {
     `   Publish: ${flags.apply ? 'push a new branch and open a draft pull request' : 'off (pass --apply to publish)'}`,
   );
   console.log(`   Scan: ${flags.full ? 'full' : 'type errors and TODOs (pass --full for tests, coverage, and dead code)'}`);
+  console.log(`   Scratch: ${flags.fresh ? 'fresh clone' : 'warm (reuse under temp; pass --fresh to rebuild)'}`);
+  if (flags.intervalSec !== null) {
+    console.log(`   Interval: ${flags.intervalSec}s (skip-questions on)`);
+  }
   console.log('');
 
   const skillsPath = resolveConfiguredPath(
@@ -298,23 +324,61 @@ export async function main(): Promise<void> {
 
   const profile = resolveProfile(flags.profile);
   const sourceRoot = env.REPO_ROOT;
-  let scratch: string | null = null;
+  const stop = { value: false };
+  const onStop = (): void => {
+    stop.value = true;
+    console.error('\n[grind] stop requested — finishing current work, leaving warm scratch');
+  };
+  process.on('SIGINT', onStop);
+  process.on('SIGTERM', onStop);
+
   try {
-    scratch = await prepareScratchClone(sourceRoot);
-    await runAgainstClone({
-      flags,
-      env,
-      sourceRoot,
-      scratch,
-      runner,
-      fileReader,
-      profile,
-      skillsPath,
-      skipCategories,
-      scanCategories,
+    let scratch = await prepareScratchClone(sourceRoot, undefined, {
+      fresh: flags.fresh,
     });
+    let iteration = 0;
+    while (!stop.value) {
+      iteration += 1;
+      if (flags.intervalSec !== null) {
+        console.log(`\n—— grind iteration ${iteration} ——\n`);
+      }
+      await runAgainstClone({
+        flags,
+        env,
+        sourceRoot,
+        scratch,
+        runner,
+        fileReader,
+        profile,
+        skillsPath,
+        skipCategories,
+        scanCategories,
+      });
+      if (flags.intervalSec === null || stop.value) break;
+      await interruptibleSleep(flags.intervalSec * 1000, () => stop.value);
+      if (stop.value) break;
+      // Refresh tree from the open checkout; keep node_modules when possible.
+      scratch = await prepareScratchClone(sourceRoot);
+    }
   } finally {
-    if (scratch) await removeScratchClone(scratch);
+    process.off('SIGINT', onStop);
+    process.off('SIGTERM', onStop);
+    // Leave the warm scratch on disk. Pass --fresh on the next run to
+    // delete and re-clone.
+  }
+}
+
+/** Sleep that wakes early when `shouldStop` becomes true. */
+export async function interruptibleSleep(
+  ms: number,
+  shouldStop: () => boolean,
+): Promise<void> {
+  const deadline = Date.now() + Math.max(0, ms);
+  while (!shouldStop() && Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, Math.min(250, remaining));
+    });
   }
 }
 

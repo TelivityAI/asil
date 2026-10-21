@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   categoriesToSkip,
   formatSkillStatus,
+  interruptibleSleep,
   parseFlags,
   scanCategoriesFor,
   skillStatuses,
@@ -56,6 +57,28 @@ describe('parseFlags', () => {
     ]);
     expect(categoriesToSkip(flags!)).toContain('dead-code');
     expect(categoriesToSkip(flags!)).not.toContain('test-failure');
+  });
+
+  it('parses --fresh and --interval, and forces skip-questions for interval mode', () => {
+    expect(parseFlags([])?.fresh).toBe(false);
+    expect(parseFlags([])?.intervalSec).toBeNull();
+    expect(parseFlags(['--fresh'])?.fresh).toBe(true);
+    const interval = parseFlags(['--interval', '45']);
+    expect(interval?.intervalSec).toBe(45);
+    expect(interval?.skipQuestions).toBe(true);
+    expect(parseFlags(['--interval', '0'])).toBeNull();
+  });
+});
+
+describe('interruptibleSleep', () => {
+  it('returns early when shouldStop becomes true', async () => {
+    let stop = false;
+    const started = Date.now();
+    setTimeout(() => {
+      stop = true;
+    }, 40);
+    await interruptibleSleep(5_000, () => stop);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });
 

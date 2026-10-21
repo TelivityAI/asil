@@ -25,7 +25,7 @@ packages:
 
 ## 2. Set up environment
 
-Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other. `auto grind` refuses to start unless `REPO_ROOT` is set. Grind copies that repository under the system temp directory and does not run commands or git writes in the checkout you have open. Target-repository commands run inside bubblewrap (`bwrap` on `PATH`). Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution.
+Create `.env` next to `pnpm-workspace.yaml` in the ASIL checkout. The CLI loads that file and no other. `auto grind` refuses to start unless `REPO_ROOT` is set. Grind copies that repository under the system temp directory, reuses the copy across runs, and does not run commands or git writes in the checkout you have open. Pass `--fresh` to delete and re-clone. Pass `--interval SEC` to leave grind looping in one process. Target-repository commands run inside bubblewrap (`bwrap` on `PATH`). Set `ASIL_SANDBOX=off` only when you accept unsandboxed execution.
 
 ```
 ANTHROPIC_API_KEY=sk-ant-…
@@ -70,21 +70,24 @@ You'll get a Markdown brief with merged recommendations, conflict resolutions, a
 pnpm --filter asil-runners auto grind --dry-run
 ```
 
-This scans and reports without executing tasks, calling a model, or changing git. Grind copies the repository under the system temp directory first. The default scan runs typecheck and a TODO search on that copy, so it is not a no-op, and it does not run commands in the checkout you have open. Pass `--full` to add tests, coverage, and dead code.
+This scans and reports without executing tasks, calling a model, or changing git. Grind uses (or creates) the warm scratch under the system temp directory first. The default scan runs typecheck and a TODO search on that copy, so it is not a no-op, and it does not run commands in the checkout you have open. Pass `--full` to add tests, coverage, and dead code.
 
 ## 6. Run a real grind (small budget)
 
 ```bash
 pnpm --filter asil-runners auto grind --skip dependency-update,documentation --apply
+# Leave it running during a sprint (refreshes the warm scratch between iterations):
+pnpm --filter asil-runners auto grind --interval 300 --apply
 ```
 
 The runner will:
 
 1. Print whether each scanned category loaded a skill file. Pass `--require-skills` to stop before scanning when one is missing.
-2. Scan and queue tasks. Scanner commands run inside the jail.
-3. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage
-4. For the one task this run takes (pass `--max-tasks` for more, `--full` to scan tests, coverage, and dead code): execute, typecheck, test, self-review × 3, adversarial gate, domain guard. `--apply` then commits, pushes a new `auto/*` branch, and opens a draft pull request. It does not overwrite a branch that is already on the remote. Without `--apply` the task stays queued.
-5. Print a summary with cost spent and PRs opened
+2. Reuse or create the warm scratch under the system temp directory. Pass `--fresh` to delete it first.
+3. Scan and queue tasks. Scanner commands run inside the jail. Install and recursive build run only when the lockfile changed or `node_modules` is missing.
+4. Pause on any unresolved `// DOMAIN_QUESTION:` markers and offer triage (skipped automatically with `--interval`).
+5. For the one task this run takes (pass `--max-tasks` for more, `--full` to scan tests, coverage, and dead code): execute, typecheck, test, self-review × 3, adversarial gate, domain guard. `--apply` then commits, pushes a new `auto/*` branch, and opens a draft pull request. It does not overwrite a branch that is already on the remote. Without `--apply` the task stays queued.
+6. Print a summary with cost spent and PRs opened. With `--interval`, sleep and repeat until interrupted; the scratch stays on disk.
 
 ## 7. Inspect the spend
 
@@ -107,6 +110,7 @@ Reports come out as Markdown tables with per-task, per-system, and per-day cost 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `git clone` into the temp directory fails | The source repository cannot be read, or the temp directory is not writable | Check `git status` in `REPO_ROOT` and that the system temp directory is writable. Grind does not create a worktree in the checkout you have open. |
-| `pnpm install` fails in the scratch clone | The clone has no `node_modules` yet, or the lockfile does not match | The loop runs `pnpm install --frozen-lockfile` once in the clone. Install scripts stay off unless `ASIL_ALLOW_INSTALL_SCRIPTS=1`. |
+| Scratch looks stale | An old warm copy is being reused | Pass `--fresh` to delete `tmpdir()/asil-scratch-*` and clone again. |
+| `pnpm install` fails in the scratch clone | The clone has no `node_modules` yet, or the lockfile does not match | The loop runs `pnpm install --frozen-lockfile` when the lockfile hash changes. Install scripts stay off unless `ASIL_ALLOW_INSTALL_SCRIPTS=1`. |
 | Adversarial gate keeps blocking | Diff is genuinely contradictory or oversized | Check the gate's reason string; usually the LLM has a real point. Lower `maxAttempts` to fail faster. |
 | Cost cap hit immediately | Budget too low for selected models | Either bump `dailyBudgetUSD` or downgrade `executionModel` from `opus` to `sonnet`. |

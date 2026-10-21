@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import {
   BudgetManager,
@@ -614,10 +615,63 @@ function hasRunnableTask(queue: TaskQueue, skip: readonly string[]): boolean {
   );
 }
 
+const LOCKFILE_NAMES = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+] as const;
+
+/** Fingerprint of the install inputs under `repoRoot`, or null if none. */
+export function lockfileFingerprint(repoRoot: string): string | null {
+  for (const name of LOCKFILE_NAMES) {
+    const path = join(repoRoot, name);
+    if (!existsSync(path)) continue;
+    const hash = createHash('sha256').update(readFileSync(path)).digest('hex');
+    return `${name}:${hash}`;
+  }
+  const pkg = join(repoRoot, 'package.json');
+  if (!existsSync(pkg)) return null;
+  const hash = createHash('sha256').update(readFileSync(pkg)).digest('hex');
+  return `package.json:${hash}`;
+}
+
+export function lockHashMarkerPath(repoRoot: string): string {
+  return join(repoRoot, '.asil-scratch', 'lock-hash');
+}
+
+/** True when node_modules exists and the lockfile hash matches the marker. */
+export function shouldSkipWorkspaceBootstrap(repoRoot: string): boolean {
+  if (!existsSync(join(repoRoot, 'node_modules'))) return false;
+  const fingerprint = lockfileFingerprint(repoRoot);
+  if (!fingerprint) return false;
+  const marker = lockHashMarkerPath(repoRoot);
+  if (!existsSync(marker)) return false;
+  try {
+    return readFileSync(marker, 'utf8').trim() === fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+function writeLockHashMarker(repoRoot: string): void {
+  const fingerprint = lockfileFingerprint(repoRoot);
+  if (!fingerprint) return;
+  const marker = lockHashMarkerPath(repoRoot);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, fingerprint, 'utf8');
+}
+
 async function installWorkspace(
   repoRoot: string,
   runner: CommandRunner,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true; skipped?: boolean } | { ok: false; reason: string }> {
+  if (shouldSkipWorkspaceBootstrap(repoRoot)) {
+    console.error(
+      '[loop] lockfile unchanged and node_modules present — skipping install and recursive build',
+    );
+    return { ok: true, skipped: true };
+  }
+
   // --ignore-scripts by default: a target repo's install lifecycle
   // scripts are arbitrary code. Opt back in with
   // ASIL_ALLOW_INSTALL_SCRIPTS=1 when the repository needs them.
@@ -640,5 +694,6 @@ async function installWorkspace(
     console.error('\n[loop] ✖ pnpm build failed in the scratch clone');
     console.error(`       stderr: ${buildResult.stderr.slice(0, 500)}`);
   }
+  writeLockHashMarker(repoRoot);
   return { ok: true };
 }
