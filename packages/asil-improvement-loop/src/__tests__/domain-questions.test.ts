@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import {
   DomainAnswerStore,
   buildDomainAnswerContext,
+  createDomainAnswerStore,
   findDomainQuestions,
   hashQuestion,
 } from '../domain-questions.js';
+import { defaultGrindStateRoot } from '../paths.js';
 import { mockRunner } from './helpers.js';
 
 describe('hashQuestion', () => {
@@ -243,6 +245,57 @@ describe('DomainAnswerStore', () => {
     writeFileSync(path, '{not json', 'utf8');
     const store = new DomainAnswerStore(path);
     expect(store.listAnswers()).toEqual([]);
+  });
+});
+
+describe('createDomainAnswerStore', () => {
+  let savedDomain: string | undefined;
+  let savedState: string | undefined;
+
+  beforeEach(() => {
+    savedDomain = process.env.ASIL_DOMAIN_ANSWERS_PATH;
+    savedState = process.env.ASIL_STATE_DIR;
+    delete process.env.ASIL_DOMAIN_ANSWERS_PATH;
+    delete process.env.ASIL_STATE_DIR;
+  });
+
+  afterEach(() => {
+    if (savedDomain === undefined) {
+      delete process.env.ASIL_DOMAIN_ANSWERS_PATH;
+    } else {
+      process.env.ASIL_DOMAIN_ANSWERS_PATH = savedDomain;
+    }
+    if (savedState === undefined) {
+      delete process.env.ASIL_STATE_DIR;
+    } else {
+      process.env.ASIL_STATE_DIR = savedState;
+    }
+  });
+
+  it('defaults under the temp grind state root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'domain-root-'));
+    try {
+      const store = createDomainAnswerStore(root);
+      expect(store.filePath).toBe(
+        join(defaultGrindStateRoot(root), '.asil', 'domain-answers.json'),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('honours ASIL_STATE_DIR and ASIL_DOMAIN_ANSWERS_PATH', () => {
+    const root = mkdtempSync(join(tmpdir(), 'domain-root-'));
+    const state = mkdtempSync(join(tmpdir(), 'domain-state-'));
+    process.env.ASIL_STATE_DIR = state;
+    process.env.ASIL_DOMAIN_ANSWERS_PATH = 'answers.json';
+    try {
+      const store = createDomainAnswerStore(root);
+      expect(store.filePath).toBe(join(state, 'answers.json'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(state, { recursive: true, force: true });
+    }
   });
 });
 

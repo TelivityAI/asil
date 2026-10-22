@@ -68,15 +68,16 @@ const HELP = `
     REPO_ROOT is required for grind. It does not default to the
     current directory.
     grind copies the repository under the system temp directory and
-    reuses that scratch across runs. It does not run commands in the
-    checkout you have open. Pass --fresh to delete and re-clone.
-    Pass --interval SEC to grind repeatedly in one process. The
-    default run is one type-error or TODO task. Pass --full to add
-    tests, coverage, and dead code. grind does not commit, push, or
-    open a pull request unless you pass --apply. --apply pushes a new
-    auto/* branch and opens a draft pull request. It does not
-    overwrite a branch that is already on the remote.
-    Target-repository commands run inside bubblewrap unless
+    reuses that scratch across runs. Queue, usage, and domain-answer
+    files default under the system temp directory too (ASIL_STATE_DIR).
+    Skills still load from the open checkout. Pass --fresh to delete
+    and re-clone. Pass --interval SEC to grind repeatedly in one
+    process. The default run is one type-error or TODO task. Pass
+    --full to add tests, coverage, and dead code. grind does not
+    commit, push, or open a pull request unless you pass --apply.
+    --apply pushes a new auto/* branch and opens a draft pull
+    request. It does not overwrite a branch that is already on the
+    remote. Target-repository commands run inside bubblewrap unless
     ASIL_SANDBOX=off.
 `.trimStart();
 

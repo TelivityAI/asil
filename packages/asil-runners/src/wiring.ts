@@ -31,6 +31,7 @@ import type {
 import {
   RemoteBranchExistsError,
   resolveConfiguredPath,
+  resolveGrindStatePath,
   type CodexCaller,
   type CommandRunner,
   type DiffApplier,
@@ -960,15 +961,18 @@ export interface CostInfra {
   ) => CostCheckpoint;
 }
 
-/** Default usage-data location, relative to repoRoot. Overridable via the
- *  `ASIL_USAGE_DATA_DIR` env var (absolute or repoRoot-relative). */
+/** Default usage-data location under the grind state root. Overridable
+ *  via `ASIL_USAGE_DATA_DIR` (or `ASIL_STATE_DIR` for the whole state tree). */
 const DEFAULT_USAGE_DATA_SUBPATH = '.asil/usage-data';
 
 /** Shared System C infrastructure — tracker + budget + reporter + a
  *  factory for CostCheckpoints. Creates the usage-data dir if missing. */
 export function createCostInfra(repoRoot: string): CostInfra {
-  const configured = process.env.ASIL_USAGE_DATA_DIR ?? DEFAULT_USAGE_DATA_SUBPATH;
-  const dataDir = resolveConfiguredPath(repoRoot, configured);
+  const dataDir = resolveGrindStatePath(
+    repoRoot,
+    process.env.ASIL_USAGE_DATA_DIR,
+    DEFAULT_USAGE_DATA_SUBPATH,
+  );
   mkdirSync(dataDir, { recursive: true });
 
   const tracker = new TokenTracker(resolve(dataDir, 'usage.json'));

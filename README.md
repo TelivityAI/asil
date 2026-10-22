@@ -77,6 +77,7 @@ copy repo to a scratch clone → scan → cycle-detect → triage domain questio
 - **Scanner** defaults to type errors and TODO markers. `--full` adds test failures, dead code, and coverage gaps, one scanner after another
 - **Cycle detector** prevents the loop from churning on the same file repeatedly
 - **Scratch clone** — grind copies the repository under the system temp directory. Commands and git writes run there, not in the checkout you have open
+- **State off the checkout** — queue, usage, and domain-answer files default under `tmpdir()/asil-state-<hash>`. Skills still load from `REPO_ROOT/.asil/skills`
 - **Self-review** runs three persona prompts scoped strictly to the diff
 - **Adversarial gate** sends the diff to a different model (different provider, different family) to challenge the work
 - **Domain guard** blocks the PR if the diff touches a `// DOMAIN_QUESTION:` zone with no resolved answer
@@ -101,9 +102,10 @@ Other limits:
 
 - `REPO_ROOT` is required for `auto grind`, including `--dry-run`. It does not default to the current directory.
 - Grind copies the repository to `tmpdir()/asil-scratch-<hash>` and runs the scan, install, build, and tests there. It does not run commands or git writes in the checkout you have open. The scratch stays warm across runs. Pass `--fresh` to delete it and clone again. `--interval SEC` sleeps and repeats in the same process, refreshing the scratch from the open checkout's current HEAD without creating worktrees there.
+- Queue, usage, and domain-answer files default under `tmpdir()/asil-state-<hash>`. Set `ASIL_STATE_DIR` (or `ASIL_QUEUE_PATH` / `ASIL_USAGE_DATA_DIR` / `ASIL_DOMAIN_ANSWERS_PATH`) to keep that state elsewhere. Skills still load from `REPO_ROOT/.asil/skills` (or `ASIL_SKILLS_PATH`).
 - The default run handles one type-error or TODO task. `--full` adds tests, coverage, and dead code. `--max-tasks` raises the cap.
 - Install and a recursive build run once when the lockfile (or `package.json`) has changed, or when `node_modules` is missing. Unchanged lockfiles skip that bootstrap. After a patch, only the workspace package that contains the edited file is rebuilt, and only when that package has a `build` script.
-- Patch reads stay inside the target repository. Relative paths for usage data, the queue, skills, and domain answers cannot leave the repository. An absolute path is used as given unless it contains `..` and resolves outside the repository. Those files stay in the checkout you have open; the scratch clone is only the working tree.
+- Patch reads stay inside the target repository. Relative state paths resolve against `ASIL_STATE_DIR` when that env is set, otherwise against `REPO_ROOT`. Relative skill paths still resolve against `REPO_ROOT`. An absolute path is used as given unless it contains `..` and resolves outside the repository.
 - `auto grind` does not commit, push, or open a pull request unless you pass `--apply`. `--apply` pushes a new `auto/*` branch and opens a draft pull request. It does not overwrite a branch that is already on the remote. Without `--apply`, a task that passes the gates stays queued.
 - Before scanning, grind prints whether each scanned category loaded a skill file. A missing file uses the built-in instructions. `--require-skills` exits before scanning when any scanned category is missing its skill.
 
@@ -224,10 +226,11 @@ Every LLM call in B and A flows through a `CostCheckpoint`. Each checkpoint is b
 | `OPENAI_API_KEY` | env | required | Adversarial gate (different provider) |
 | `REPO_ROOT` | env | required for `auto grind` | Absolute path of the target repository. `think` and `report` still default to the current directory. |
 | `ASIL_SANDBOX` | env | on | Set to `off` to run target-repository commands without bubblewrap. |
-| `ASIL_USAGE_DATA_DIR` | env | `<REPO_ROOT>/.asil/usage-data` | Cost tracker state. Relative values must stay inside the repo. An absolute value is used as given unless `..` leaves the repo. |
-| `ASIL_QUEUE_PATH` | env | `<REPO_ROOT>/.asil/usage-data/queue.json` | Task queue. Same path rules as `ASIL_USAGE_DATA_DIR`. |
-| `ASIL_SKILLS_PATH` | env | `<REPO_ROOT>/.asil/skills` | Markdown skills. Files are `{name}.md` or `{name}/SKILL.md` directly under this directory. Same path rules as `ASIL_USAGE_DATA_DIR`. |
-| `ASIL_DOMAIN_ANSWERS_PATH` | env | `<REPO_ROOT>/.asil/domain-answers.json` | Resolved domain answers. Same path rules as `ASIL_USAGE_DATA_DIR`. |
+| `ASIL_STATE_DIR` | env | `tmpdir()/asil-state-<hash>` | Root for queue, usage, and domain-answer files. Skills stay under `REPO_ROOT`. |
+| `ASIL_USAGE_DATA_DIR` | env | `<ASIL_STATE_DIR>/.asil/usage-data` | Cost tracker state. Relative values resolve against `ASIL_STATE_DIR` when set, otherwise against `REPO_ROOT`. An absolute value is used as given unless `..` leaves the repo. |
+| `ASIL_QUEUE_PATH` | env | `<ASIL_STATE_DIR>/.asil/usage-data/queue.json` | Task queue. Same path rules as `ASIL_USAGE_DATA_DIR`. |
+| `ASIL_SKILLS_PATH` | env | `<REPO_ROOT>/.asil/skills` | Markdown skills. Files are `{name}.md` or `{name}/SKILL.md` directly under this directory. Relative values resolve against `REPO_ROOT`. |
+| `ASIL_DOMAIN_ANSWERS_PATH` | env | `<ASIL_STATE_DIR>/.asil/domain-answers.json` | Resolved domain answers. Same path rules as `ASIL_USAGE_DATA_DIR`. |
 | `papaModel` / `thinkerModel` | `ThoughtMultiplierConfig` | `opus` / `sonnet` | Model tiers per role |
 | `executionModel` / `reviewModel` | `ImprovementLoopConfig` | `sonnet` / `sonnet` | Model tiers in System A |
 | `maxTasksPerRun` | `ImprovementLoopConfig` | CLI flag | Hard cap per `auto grind` |
@@ -247,7 +250,11 @@ ASIL is a TypeScript monorepo. The four library packages are not published to np
 `runLoop` takes the config first and the dependencies second:
 
 ```ts
-import { runLoop } from 'asil-improvement-loop';
+import {
+  resolveConfiguredPath,
+  resolveGrindStatePath,
+  runLoop,
+} from 'asil-improvement-loop';
 import {
   createAnthropicCaller,
   createCodexCaller,
@@ -264,7 +271,17 @@ import {
 const repoRoot = process.env.REPO_ROOT!;
 // Reuses tmpdir()/asil-scratch-<hash>. Pass { fresh: true } to rebuild.
 const scratch = await prepareScratchClone(repoRoot);
+// Queue/usage/domain answers default under tmpdir()/asil-state-<hash>.
 const cost = createCostInfra(repoRoot);
+const queuePath = resolveGrindStatePath(
+  repoRoot,
+  process.env.ASIL_QUEUE_PATH,
+  '.asil/usage-data/queue.json',
+);
+const skillsPath = resolveConfiguredPath(
+  repoRoot,
+  process.env.ASIL_SKILLS_PATH ?? '.asil/skills',
+);
 
 await runLoop(
   {
@@ -273,9 +290,9 @@ await runLoop(
     maxTasksPerRun: 1,
     maxAttempts: 2,
     taskCooldownMs: 5000,
-    markdownSkillsPath: `${repoRoot}/.asil/skills`,
+    markdownSkillsPath: skillsPath,
     repoRoot: scratch,
-    queuePath: `${repoRoot}/.asil/usage-data/queue.json`,
+    queuePath,
     skipCategories: ['test-failure', 'coverage-gap', 'dead-code'],
     scanCategories: ['type-error', 'todo-resolution'],
     scanSequential: true,

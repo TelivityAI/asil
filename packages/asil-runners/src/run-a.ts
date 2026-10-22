@@ -24,6 +24,8 @@ import {
   findSkillFile,
   pythonProfile,
   resolveConfiguredPath,
+  resolveGrindStatePath,
+  resolveGrindStateRoot,
   runLoop,
   SCANNED_CATEGORIES,
   scanCodebase,
@@ -242,6 +244,9 @@ Options:
 Environment:
   REPO_ROOT           Required. Absolute path of the target repository.
                       grind does not default to the current directory.
+  ASIL_STATE_DIR      Directory for queue, usage, and domain-answer files.
+                      Default: a path under the system temp directory.
+                      Skills still load from REPO_ROOT/.asil/skills.
   ASIL_SANDBOX        Set to off to run target-repository commands without
                       the bubblewrap jail. Default is on.`
 
@@ -303,6 +308,8 @@ export async function main(): Promise<void> {
   if (flags.intervalSec !== null) {
     console.log(`   Interval: ${flags.intervalSec}s (skip-questions on)`);
   }
+  const stateRoot = resolveGrindStateRoot(env.REPO_ROOT);
+  console.log(`   State: ${stateRoot}`);
   console.log('');
 
   const skillsPath = resolveConfiguredPath(
@@ -490,6 +497,12 @@ async function runAgainstClone(run: GrindRun): Promise<void> {
   const diff = createDiffApplier();
   const fileFetcher = createFileFetcher();
 
+  const queuePath = resolveGrindStatePath(
+    sourceRoot,
+    process.env.ASIL_QUEUE_PATH,
+    '.asil/usage-data/queue.json',
+  );
+
   const config: ImprovementLoopConfig = {
     // Cloud default: Sonnet for both. Local mode: caller can override
     // via ASIL_LLM_MODEL (e.g. 'llama3.1:8b-instruct-q4_K_M') which the
@@ -503,10 +516,7 @@ async function runAgainstClone(run: GrindRun): Promise<void> {
     taskCooldownMs: 5000,
     markdownSkillsPath: skillsPath,
     repoRoot: scratch,
-    queuePath: resolveConfiguredPath(
-      sourceRoot,
-      process.env.ASIL_QUEUE_PATH ?? '.asil/usage-data/queue.json',
-    ),
+    queuePath,
     skipCategories,
     scanCategories,
     scanSequential: true,
